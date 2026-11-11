@@ -84,8 +84,8 @@ export function makeExplore({ scene, camera, cur }) {
     get active() { return mode != null || k > 0.001; },
     get mode() { return mode; },
     get mapK() { return mode === 'map' ? k : 0; },
-    fly() { begin('fly', camera.position, look.copy(camera.position).add(camera.getWorldDirection(tmp).multiplyScalar(10))); },
-    map() { begin('map', camera.position, look.copy(camera.position).add(camera.getWorldDirection(tmp).multiplyScalar(10))); },
+    fly() { if (mode === 'fly') return; begin('fly', camera.position, look.copy(camera.position).add(camera.getWorldDirection(tmp).multiplyScalar(10))); },
+    map() { if (mode === 'map') return; begin('map', camera.position, look.copy(camera.position).add(camera.getWorldDirection(tmp).multiplyScalar(10))); },
     exit() { mode = null; vel = [0, 0, 0]; turn = 0; flyTarget = null; },
     move(f, s, u) { vel = [f, s, u].map((x) => Math.max(-1, Math.min(1, Number(x) || 0))); },
     look(dx, dy) {

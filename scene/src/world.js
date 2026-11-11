@@ -92,7 +92,7 @@ export function buildCloudSea(lite) {
 
 // Карта высот массива для шейдера: половинная точность (линейная фильтрация есть в WebGL2 всегда).
 export function buildHeightTexture(quality) {
-  const size = quality >= 2 ? 1024 : quality === 1 ? 512 : 256;
+  const size = quality >= 1 ? 512 : 256; // 1024 даёт мало заметной разницы, а строится в 4 раза дольше
   const ext = 130;
   const data = new Uint16Array(size * size);
   for (let j = 0; j < size; j++) {

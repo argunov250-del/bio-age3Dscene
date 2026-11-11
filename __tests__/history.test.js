@@ -58,6 +58,8 @@ test('симулятор: больше сна и шагов не ухудшаю�
   expect(longer[200]).toBe(1);
   const ds = { now: new Date(2026, 5, 30, 12), steps: { '2026-06-29': 3000 }, sleep: { '2026-06-29': arr }, nights: {} };
   const out = applyPlan(ds, { steps: 9000, sleepH: 8, days: 3 });
+  expect(out.steps['2026-06-28']).toBeUndefined(); // дни без данных не появляются
+  expect(out.sleep['2026-06-28']).toBeUndefined();
   expect(out.steps['2026-06-29']).toBe(9000);
   expect(ds.steps['2026-06-29']).toBe(3000); // исходные данные не тронуты
   expect(out.sleep['2026-06-29'].reduce((a, x) => a + x, 0)).toBe(96);

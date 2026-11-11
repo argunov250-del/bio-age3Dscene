@@ -17,6 +17,10 @@ const QUALITY = INIT.quality != null ? INIT.quality : lite ? 0 : 1;
 const TABS = INIT.tabs || 4;
 const post = (type, data) => { try { if (window.ReactNativeWebView) window.ReactNativeWebView.postMessage(JSON.stringify({ type, ...data })); } catch (e) {} };
 
+// Сразу сообщаем приложению, что страница жива: дальше идёт сборка мира (на слабом телефоне —
+// несколько секунд), и приложение не должно считать сцену сломанной.
+post('alive');
+
 let renderer;
 try {
   renderer = new THREE.WebGLRenderer({ antialias: !lite, powerPreference: 'high-performance', alpha: false });

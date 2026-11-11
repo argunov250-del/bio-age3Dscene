@@ -100,7 +100,8 @@ const SCENE_CARD = { light: '#FFFFFFE3', dark: '#1A1C1FDE' };
 const SCENE_CARD_STORM = { light: '#FFFFFFF2', dark: '#1A1C1FF0' }; // гроза и туман: стекло плотнее, текст читается
 const SCENE_VEIL = 0.4;
 const SCENE_VEIL_CLEAR = 0.06; // «Главная» со свёрнутой панелью: почти чистый пейзаж
-const SCENE_LOAD_MS = 6000; // сцена не загрузилась за это время — обычный экран запуска и фон
+const SCENE_LOAD_MS = 6000; // страница сцены не ответила за это время — обычный экран запуска и фон
+const SCENE_BUILD_MS = 25000; // страница ответила, но мир не собрался за это время — тоже запасной путь
 
 function Main() {
   const insets = useSafeAreaInsets();
@@ -137,11 +138,13 @@ function Main() {
   const sceneRef = useRef(null);
   const [sceneOk, setSceneOk] = useState(true);
   const [scenePhase, setScenePhase] = useState('loading');
+  const [sceneAlive, setSceneAlive] = useState(false); // страница сцены запустилась и строит мир
   const [appActive, setAppActive] = useState(true);
   const uiIn = useRef(new Animated.Value(0)).current; // интерфейс проявляется поверх уже живой сцены
   const swipeX = useRef(new Animated.Value(0)).current;
   const onSceneEvent = useCallback((type, m) => {
     if (type === 'error') { setSceneOk(false); return; }
+    if (type === 'alive') { setSceneAlive(true); return; }
     if (type === 'loaded' && m && m.canRecord) setCanRecord(true);
     if (type === 'pick') { if (ExploreMode.onPick && m && m.id) ExploreMode.onPick(m.id); return; }
     if (type === 'shot' || type === 'clip') {
@@ -158,9 +161,10 @@ function Main() {
   }, []);
   useEffect(() => {
     if (scenePhase !== 'loading' || !sceneOk) return undefined;
-    const id = setTimeout(() => setSceneOk(false), SCENE_LOAD_MS);
+    // страница жива — ждём сборки мира дольше; не ответила вовсе — запасной запуск
+    const id = setTimeout(() => setSceneOk(false), sceneAlive ? SCENE_BUILD_MS : SCENE_LOAD_MS);
     return () => clearTimeout(id);
-  }, [scenePhase, sceneOk]);
+  }, [scenePhase, sceneOk, sceneAlive]);
   useEffect(() => { if (!sceneOk) uiIn.setValue(1); }, [sceneOk, uiIn]);
   const [profile, setProfile] = useState(null);
   // Тема (светлая/тёмная) из профиля: применяется сразу, на всём дереве (ключ ниже перерисовывает экраны).
@@ -412,7 +416,7 @@ function Main() {
     const norm = sc && sc.sleep ? sc.sleep.norm : null;
     const nights = (result && result.series && result.series.sleep) || [];
     let poor = 0;
-    for (let i = nights.length - 1; i >= 0 && i >= nights.length - 3; i--) { if (norm && nights[i] && nights[i].v < norm - 0.5) poor++; else break; }
+    for (let i = nights.length - 1; i >= 0 && i >= nights.length - 3; i--) { if (norm && nights[i] && nights[i].v >= 1 && nights[i].v < norm - 0.5) poor++; else break; }
     return restSuggestion({ sched: schedule, key: todayKey, tired: ready != null && ready < 45, sleepPoor: poor > 0, poorNights: poor, dismissed: profile && profile.restDismissed });
   }, [result, schedule, todayKey, profile]);
   const acceptRest = useCallback(() => { success(); saveSchedule(setOverride(schedule, todayKey, 'rest')); }, [schedule, todayKey, saveSchedule]);
@@ -439,7 +443,7 @@ function Main() {
   // новая вершина — пролёт камеры и карточка. День отдыха — по своему календарю или по совету Хирона.
   const restToday = !!(dayPlan.plan && dayPlan.plan.mode === 'rest') || schedIsRest(schedule, todayKey);
   useEffect(() => {
-    if (!growth) return undefined;
+    if (!growth || habits === null) return undefined; // пока привычки не прочитаны — не считаем (иначе правило «3 задания»)
     let alive = true;
     updatePeaks(Date.now(), restToday, { sched: schedule, habits }).then((r) => {
       if (!alive || !r || !r.peaks) return;
@@ -754,7 +758,7 @@ function Main() {
     <View style={{ flex: 1, backgroundColor: sceneLaunch ? PAPER : colors.bg }}>
       <StatusBar barStyle={colors.dark && !(sceneLaunch && screen === 'intro') ? 'light-content' : 'dark-content'} backgroundColor="transparent" translucent />
       {sceneOn ? (
-        <Scene3D ref={sceneRef} state={sceneView} tab={tabIndex} tabs={TAB_KEYS.length} lite={OLD_ANDROID} quick={reduceMotion() || !splash}
+        <Scene3D ref={sceneRef} state={sceneView} tab={tabIndex} tabs={TAB_KEYS.length} lite={OLD_ANDROID || !!(profile && profile.quality === 0)} quick={reduceMotion() || !splash}
           paused={!appActive || (!splash && screen !== 'home' && !calm && !explore && !locked && !guest)} onEvent={onSceneEvent}
           quality={profile && profile.quality != null ? profile.quality : null} />
       ) : null}

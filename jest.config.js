@@ -5,6 +5,8 @@ module.exports = {
   setupFiles: ['<rootDir>/__tests__/setupNative.js'],
   moduleNameMapper: { '\\.png$': '<rootDir>/__tests__/pngStub.js' },
   testMatch: ['<rootDir>/__tests__/**/*.test.js'],
+  // полный рендер приложения на раннере CI идёт дольше 5 секунд
+  testTimeout: 60000,
   transform: {
     '\\.js$': ['babel-jest', { babelrc: false, configFile: false, presets: [['@babel/preset-env', { targets: { node: 'current' } }], '@babel/preset-react'] }],
   },

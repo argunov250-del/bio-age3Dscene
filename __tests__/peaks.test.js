@@ -101,3 +101,32 @@ describe('свои привычки и график', () => {
     expect(r.peaks.streak).toBe(3);
   });
 });
+
+describe('правило успешного дня — краевые случаи', () => {
+  const { computePeaks: cp, LATE_DAYS } = require('../lib/peaks');
+  const H = require('../lib/habits');
+  const only = { ...H.addHabit(null, { catalogId: 'read' }), minOptional: 0 };
+  test('только дополнительные и minOptional 0: без отметок день не успешный, с одной — успешный', () => {
+    expect(H.daySummary(only, '2026-05-01', null, null).success).toBe(false);
+    expect(H.daySummary(H.toggleDone(only, 'read', '2026-05-01'), '2026-05-01', null, null).success).toBe(true);
+  });
+  test('день без привычек по расписанию нейтрален: серия по будням не рвётся в выходные', () => {
+    const wk = { ...H.addHabit(null, { catalogId: 'walk', required: true, days: [0, 1, 2, 3, 4] }) };
+    let h = wk;
+    ['2026-11-06'].forEach((k) => { h = H.toggleDone(h, 'walk', k); }); // пятница
+    let r = cp(null, {}, '2026-11-06', false, { habits: h });
+    expect(r.peaks.streak).toBe(1);
+    r = cp(r.state, {}, '2026-11-07', false, { habits: h }); // суббота
+    r = cp(r.state, {}, '2026-11-08', false, { habits: h }); // воскресенье
+    h = H.toggleDone(h, 'walk', '2026-11-09'); // понедельник
+    r = cp(r.state, {}, '2026-11-09', false, { habits: h });
+    expect(r.peaks.streak).toBe(2);
+  });
+  test('правка правил не пересчитывает дни старше недели', () => {
+    const okRec = { got: { sleep: 12, water: 6, log: 4 }, met: {} };
+    const gd = {}; gd['2026-01-01'] = okRec;
+    const r = cp(null, gd, '2026-01-20', false, {});
+    expect(LATE_DAYS).toBe(7);
+    expect(r.peaks.total).toBe(0);
+  });
+});
