@@ -221,6 +221,15 @@ async function runApp({ lang, stored, theme }) {
       await act(async () => { r.root.findAll((n) => n.type === (k === 'schedule' ? require(path.join(ROOT, 'lib/screens/ScheduleScreen')).ScheduleScreen : require(path.join(ROOT, 'lib/screens/HabitsScreen')).HabitsScreen))[0].props.onBack(); });
       await flush();
     }
+    // История и симулятор открываются и рисуются без ошибок.
+    for (const [k, mark, Comp] of [['history', lang === 'ru' ? 'health connect отдаёт' : 'health connect provides', 'HistoryScreen'], ['simulator', lang === 'ru' ? 'попробовать в жизни' : 'try it for real', 'SimulatorScreen']]) {
+      await act(async () => { r.root.findAll((n) => n.type === PS)[0].props.onOpen(k); });
+      await flush();
+      if (!texts().toLowerCase().includes(mark)) throw new Error('экран ' + k + ' не открылся');
+      const C = require(path.join(ROOT, 'lib/screens/' + Comp))[Comp];
+      await act(async () => { r.root.findAll((n) => n.type === C)[0].props.onBack(); });
+      await flush();
+    }
     const { HabitsScreen } = require(path.join(ROOT, 'lib/screens/HabitsScreen'));
     await act(async () => { r.root.findAll((n) => n.type === PS)[0].props.onOpen('habits'); });
     await flush();

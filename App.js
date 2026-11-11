@@ -30,6 +30,11 @@ import { loadHabits, saveHabits, toggleDone } from './lib/habits';
 import { restSuggestion } from './lib/restAdvisor';
 import { ScheduleScreen } from './lib/screens/ScheduleScreen';
 import { HabitsScreen } from './lib/screens/HabitsScreen';
+import { HistoryScreen } from './lib/screens/HistoryScreen';
+import { SimulatorScreen } from './lib/screens/SimulatorScreen';
+import { loadArchive, updateArchive } from './lib/archive';
+import { loadExperiments, saveExperiments, startExperiment, stopExperiment } from './lib/experiments';
+import { addHabit, normalizeHabits } from './lib/habits';
 import { reduceMotion } from './lib/motion';
 import { SetupScreen } from './lib/screens/SetupScreen';
 import { PermissionsScreen } from './lib/screens/PermissionsScreen';
@@ -112,6 +117,11 @@ function Main() {
   const [habits, setHabits] = useState(null);
   useEffect(() => { loadHabits().then(setHabits).catch(() => {}); }, []);
   const saveH = useCallback((h) => { setHabits(h); saveHabits(h); }, []);
+  // Долгий архив по дням и личные эксперименты.
+  const [archive, setArchive] = useState({});
+  const [experiments, setExperiments] = useState([]);
+  useEffect(() => { loadArchive().then(setArchive).catch(() => {}); loadExperiments().then(setExperiments).catch(() => {}); }, []);
+  const saveE = useCallback((l) => { setExperiments(l); saveExperiments(l); }, []);
   useEffect(() => { loadPeaks().then((p) => { if (p) setPeaks((cur) => cur || p); }).catch(() => {}); loadFeedback().then(setFeedback).catch(() => {}); }, []);
   // Подробный экран: { key, arg, from } — палитра берётся от вкладки, с которой открыли.
   const [detail, setDetail] = useState(null);
@@ -211,6 +221,7 @@ function Main() {
       scheduleReminders(prof, ds);
       setResult(r);
       saveResult(r);
+      updateArchive(r).then(setArchive).catch(() => {});
     } catch (e) {
       setError(tr('Ошибка: ') + String((e && e.message) || e));
     }
@@ -383,6 +394,19 @@ function Main() {
   const acceptRest = useCallback(() => { success(); saveSchedule(setOverride(schedule, todayKey, 'rest')); }, [schedule, todayKey, saveSchedule]);
   const dismissRest = useCallback(() => { light(); onSettingsRef.current({ restDismissed: todayKey }); }, [todayKey]);
   const onSettingsRef = useRef(null);
+  // Текущий эксперимент и действия с ним.
+  const experiment = experiments.find((x) => x.status === 'running') || null;
+  const experimentAction = useCallback((act) => {
+    if (!experiment) return;
+    if (act === 'keep') {
+      let h = normalizeHabits(habits);
+      if (experiment.sleepH != null && !h.list.some((q) => q.catalogId === 'sleep')) h = addHabit(h, { catalogId: 'sleep', required: true });
+      if (experiment.steps != null && !h.list.some((q) => q.catalogId === 'steps')) h = addHabit(h, { catalogId: 'steps', required: true });
+      saveH(h); success();
+      saveE(stopExperiment(experiments, experiment.id, todayKey, 'kept'));
+    } else if (act === 'repeat') saveE(startExperiment(experiments, experiment, todayKey));
+    else saveE(stopExperiment(experiments, experiment.id, todayKey));
+  }, [experiment, experiments, habits, todayKey, saveH, saveE]);
   const dayPlan = useDayPlan({
     result, profile, weather, growth, entries, opens, now, schedRest: schedIsRest(schedule, todayKey),
     onReward: (r) => { Promise.resolve(awardEvent(r.eventId, r.xp, r.journal)).then(takeGrowth).catch(() => {}); },
@@ -512,7 +536,7 @@ function Main() {
       setHomeOpen(false);
       return true;
     }
-    if (['debug', 'tips', 'log', 'sleep', 'cycle', 'about', 'import', 'achievements', 'recap', 'workouts', 'schedule', 'habits'].includes(screen) || (screen === 'setup' && profile) || (screen === 'permissions' && granted.size)) {
+    if (['debug', 'tips', 'log', 'sleep', 'cycle', 'about', 'import', 'achievements', 'recap', 'workouts', 'schedule', 'habits', 'history', 'simulator'].includes(screen) || (screen === 'setup' && profile) || (screen === 'permissions' && granted.size)) {
       setScreen('home');
       return true;
     }
@@ -792,6 +816,15 @@ function Main() {
             <HabitsScreen habits={habits} onSave={saveH} onBack={goBack} suggested={chironTip && chironTip.goal === 'sleep' ? ['bedtime', 'screens', 'sleep'] : ['walk', 'steps', 'stretch', 'sleep']} />
           </ColorsContext.Provider>
         );
+      case 'history':
+        return <ColorsContext.Provider value={colors}><HistoryScreen archive={archive} schedule={schedule} onBack={goBack} /></ColorsContext.Provider>;
+      case 'simulator':
+        return (
+          <ColorsContext.Provider value={colors}>
+            <SimulatorScreen dataset={dataset} profile={profile} running={!!experiment} onBack={goBack}
+              onStart={(plan) => { success(); saveE(startExperiment(experiments, plan, todayKey)); setTab('growth'); setScreen('home'); }} />
+          </ColorsContext.Provider>
+        );
       case 'tips':
         return (
           <ColorsContext.Provider value={colors}>
@@ -822,7 +855,8 @@ function Main() {
                 ) : tab === 'growth' ? (
                   <GrowthScreen growth={growthView} amb={amb} scene={sceneOn} peaks={peaks}
                     habits={habits} schedule={schedule} todayKey={todayKey} onToggleHabit={(id) => { light(); saveH(toggleDone(habits, id, todayKey)); }} onOpen={open}
-                    rest={rest} onRestAccept={acceptRest} onRestDismiss={dismissRest} plan={dayPlan.plan} activities={activities} water={water} noData={noData}
+                    rest={rest} onRestAccept={acceptRest} onRestDismiss={dismissRest}
+                    experiment={experiment} archive={archive} onExperiment={experimentAction} plan={dayPlan.plan} activities={activities} water={water} noData={noData}
                     arc={dayPlan.arc} onArcAct={dayPlan.actArc} achievements={achievements.list} />
                 ) : tab === 'profile' ? (
                   <ProfileScreen profile={profile} loading={loading} onOpen={open} onReload={refresh}
