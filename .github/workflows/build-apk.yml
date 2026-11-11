@@ -1,0 +1,157 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    # APK собирается при пуше с префиксом «Update» / «Fix» или вручную через Run workflow.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'Update') || startsWith(github.event.head_commit.message, 'Fix')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: src
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Check undefined names (no-undef)
+        working-directory: src
+        run: |
+          npm install --no-audit --no-fund
+          npm run lint
+
+      - name: Unit tests
+        working-directory: src
+        run: npm test
+
+      - name: Create blank Expo project (latest SDK)
+        run: npx --yes create-expo-app@latest app --template blank --no-install
+
+      - name: Add App.js, name, package, Health Connect & Notifications
+        run: |
+          cp src/App.js app/App.js
+          cp -r src/lib app/lib
+          mkdir -p app/assets
+          cp src/assets/*.png app/assets/
+          mkdir -p app/assets/icons
+          cp src/assets/icons/*.png app/assets/icons/
+          mkdir -p app/assets/widgets
+          cp src/assets/widgets/*.png app/assets/widgets/
+          cp -r src/plugins app/plugins
+          cd app
+          node -e "
+            const fs = require('fs');
+            const c = JSON.parse(fs.readFileSync('app.json', 'utf8'));
+            c.expo.name = 'Epimely';
+            c.expo.slug = 'bio-age';
+            c.expo.icon = './assets/icon.png';
+            c.expo.userInterfaceStyle = 'automatic';
+            // Схема для ссылок из виджетов (epimely://tab/…).
+            c.expo.scheme = 'epimely';
+            c.expo.android = {
+              ...(c.expo.android || {}),
+              package: 'com.bioage.proto',
+              userInterfaceStyle: 'automatic',
+              adaptiveIcon: {
+                foregroundImage: './assets/adaptive-icon.png',
+                monochromeImage: './assets/adaptive-icon-mono.png',
+                backgroundColor: '#11212D'
+              },
+              permissions: [
+                // Чтение модели из «Загрузок». На Android 11+ произвольный .gguf всё равно
+                // может быть закрыт: тогда экран один раз просит выбрать файл (см. lib/llm.js).
+                'android.permission.READ_EXTERNAL_STORAGE',
+                'android.permission.MANAGE_EXTERNAL_STORAGE',
+                'android.permission.POST_NOTIFICATIONS',
+                'android.permission.RECEIVE_BOOT_COMPLETED',
+                'android.permission.VIBRATE',
+                'android.permission.WAKE_LOCK',
+                'android.permission.health.READ_STEPS',
+                'android.permission.health.READ_SLEEP',
+                'android.permission.health.READ_HEART_RATE',
+                'android.permission.health.READ_RESTING_HEART_RATE',
+                'android.permission.health.READ_EXERCISE',
+                'android.permission.health.READ_VO2_MAX',
+                'android.permission.health.READ_LEAN_BODY_MASS',
+                'android.permission.health.READ_HEART_RATE_VARIABILITY',
+                'android.permission.health.READ_BLOOD_PRESSURE',
+                'android.permission.health.READ_OXYGEN_SATURATION',
+                'android.permission.health.READ_WEIGHT',
+                'android.permission.health.READ_HEIGHT',
+                'android.permission.health.READ_BODY_TEMPERATURE',
+                'android.permission.health.READ_RESPIRATORY_RATE',
+                'android.permission.health.READ_DISTANCE',
+                'android.permission.health.READ_ACTIVE_CALORIES_BURNED',
+                'android.permission.health.READ_MENSTRUATION',
+                'android.permission.health.READ_HEALTH_DATA_HISTORY',
+                'android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND',
+                'android.permission.health.READ_HYDRATION',
+                'android.permission.health.WRITE_HYDRATION'
+              ],
+              // Интернет — только для погоды (включается в профиле). Фоновая геопозиция не нужна.
+              blockedPermissions: [
+                'android.permission.ACCESS_BACKGROUND_LOCATION',
+                'android.permission.SYSTEM_ALERT_WINDOW',
+                'android.permission.WRITE_EXTERNAL_STORAGE'
+              ]
+            };
+            // llama.rn с v0.10 требует новую архитектуру. OpenCL в манифесте — required=false.
+            c.expo.newArchEnabled = true;
+            c.expo.plugins = [
+              ...(c.expo.plugins || []),
+              ['llama.rn', { enableOpenCLAndHexagon: true, forceCxx20: false, enableEntitlements: false }],
+              './plugins/withLargeHeap',
+              'react-native-health-connect',
+              'expo-notifications',
+              // Значки A–D (светлые/тёмные, монохромные) и activity-alias; нативный модуль — expo-alternate-app-icons (без его плагина).
+              './plugins/withThemedIcons',
+              // 4 виджета домашнего экрана (светлая/тёмная тема — по системной); параметры — plugins/widgetsConfig.js.
+              ['react-native-android-widget', require('./plugins/widgetsConfig.js')],
+              // Системный экран — только фон: логотип рисует экран загрузки приложения.
+              ['expo-splash-screen', { image: './assets/splash-blank.png', backgroundColor: '#06141B', imageWidth: 1 }],
+              ['expo-build-properties', { android: { minSdkVersion: 26, extraProguardRules: '-keep class com.rnllama.** { *; }' } }]
+            ];
+            fs.writeFileSync('app.json', JSON.stringify(c, null, 2));
+          "
+
+      - name: Install dependencies
+        working-directory: app
+        run: |
+          npm install
+          npx expo install react-native-health-connect expo-build-properties expo-splash-screen react-native-svg @react-native-async-storage/async-storage react-native-safe-area-context expo-document-picker expo-file-system expo-sharing expo-notifications expo-haptics react-native-view-shot expo-location expo-alternate-app-icons expo-system-ui react-native-android-widget llama.rn expo-intent-launcher
+          npm install fflate@0.8.3
+
+      - name: Prebuild Android project
+        working-directory: app
+        run: |
+          npx expo prebuild --platform android --no-install
+          # Только ARM (все реальные телефоны, включая старые 32-битные): APK заметно меньше.
+          # Нативные .so llama.rn есть лишь для arm64-v8a (и x86_64): на 32-битном телефоне
+          # приложение откроется, но модель не загрузится — ей нужен 64-битный адрес и ~3 ГБ.
+          sed -i 's/^reactNativeArchitectures=.*/reactNativeArchitectures=armeabi-v7a,arm64-v8a/' android/gradle.properties
+          grep -q 'reactNativeArchitectures=armeabi-v7a,arm64-v8a' android/gradle.properties
+
+      - name: Build release APK
+        working-directory: app/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+          mkdir -p ../../out
+          cp app/build/outputs/apk/release/app-release.apk ../../out/epimely.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: epimely-apk
+          path: out/epimely.apk
+          if-no-files-found: error
