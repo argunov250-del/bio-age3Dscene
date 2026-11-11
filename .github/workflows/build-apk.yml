@@ -123,8 +123,8 @@ jobs:
         working-directory: app
         run: |
           npm install
-          npx expo install react-native-health-connect expo-build-properties expo-splash-screen react-native-svg @react-native-async-storage/async-storage react-native-safe-area-context expo-document-picker expo-file-system expo-sharing expo-notifications expo-haptics react-native-view-shot expo-location expo-alternate-app-icons expo-system-ui react-native-android-widget react-native-webview expo-local-authentication expo-screen-capture
-          npm install fflate@0.8.3
+          npx expo install react-native-health-connect expo-build-properties expo-splash-screen react-native-svg @react-native-async-storage/async-storage react-native-safe-area-context expo-document-picker expo-file-system expo-sharing expo-notifications expo-haptics react-native-view-shot expo-location expo-alternate-app-icons expo-system-ui react-native-android-widget react-native-webview expo-local-authentication expo-screen-capture expo-crypto
+          npm install fflate@0.8.3 @noble/ciphers@1.3.0 @noble/hashes@1.8.0
 
       - name: Prebuild Android project
         working-directory: app

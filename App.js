@@ -72,7 +72,7 @@ import { setHaptics, light, success } from './lib/haptics';
 import { setLite, OLD_ANDROID } from './lib/perf';
 import { getWeather } from './lib/weather';
 import { setCoachWeather } from './lib/coachBrain';
-import { loadImported, saveImported } from './lib/importer';
+import { loadImported, saveImported, dumpStore, restoreStore } from './lib/importer';
 import { dayKey } from './lib/metrics';
 import { recommend } from './lib/recommend';
 import { setChironOpener } from './lib/chiron';
@@ -641,8 +641,18 @@ function Main() {
     const ids = new Set(list.map((x) => x.id));
     setAllEntries([...entriesRef.current.filter((x) => !ids.has(x.id)), ...list]);
   };
-  const backupData = () => ({ profile, entries: entriesRef.current, imported: importedRef.current });
+  // Полная копия: профиль, записи, импорт и всё локальное хранилище (рост, вершины, привычки, график, ответы Хирону).
+  const backupData = async () => ({ profile, entries: entriesRef.current, imported: importedRef.current, store: await dumpStore() });
   const restoreBackup = async (data) => {
+    if (data.store) {
+      await restoreStore(data.store);
+      // перечитываем то, что живёт в памяти, — без перезапуска приложения
+      loadHabits().then(setHabits).catch(() => {});
+      loadPeaks().then((x) => { if (x) setPeaks(x); }).catch(() => {});
+      loadFeedback().then(setFeedback).catch(() => {});
+      Promise.resolve(loadGrowth()).then((g) => { if (g) setGrowth(g); }).catch(() => {});
+      loadUnlocks().then((u) => setUnlocks(u || {})).catch(() => {});
+    }
     const p = data.profile || profile;
     if (data.profile) { await saveProfile(p); setProfile(p); }
     if (data.imported !== undefined) {

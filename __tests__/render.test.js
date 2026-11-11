@@ -95,6 +95,7 @@ async function runApp({ lang, stored, theme }) {
     default: {
       getItem: async (k) => (store.has(k) ? store.get(k) : null), setItem: async (k, v) => { store.set(k, String(v)); },
       removeItem: async (k) => { store.delete(k); }, getAllKeys: async () => [...store.keys()], multiRemove: async () => {},
+      multiGet: async (ks) => ks.map((k) => [k, store.has(k) ? store.get(k) : null]), multiSet: async (ps) => { ps.forEach(([k, v]) => store.set(k, v)); },
     },
   }));
   const HC = { SDK_AVAILABLE: 3 };
@@ -237,6 +238,21 @@ async function runApp({ lang, stored, theme }) {
     const gs2 = r.root.findAll((n) => n.type === GS)[0];
     if (!gs2.props.habits.log[gs2.props.todayKey] || !gs2.props.habits.log[gs2.props.todayKey].walk) throw new Error('отметка привычки не сохранилась');
     await act(async () => { r.root.findAll((n) => n.type === TabBar)[0].props.onChange('profile'); });
+    await flush();
+    // Полная копия: в неё попадает всё локальное хранилище (привычки, вершины…), восстановление пишет его обратно.
+    const { ImportScreen } = require(path.join(ROOT, 'lib/screens/ImportScreen'));
+    await act(async () => { r.root.findAll((n) => n.type === PS)[0].props.onOpen('import'); });
+    await flush();
+    const imp = r.root.findAll((n) => n.type === ImportScreen)[0];
+    const copy = await imp.props.backupData();
+    if (!copy.store || !copy.store['habits.v1'] || !copy.store['profile.v1']) throw new Error('в копии нет хранилища: ' + Object.keys(copy.store || {}).join(','));
+    store.delete('habits.v1');
+    const { imported: _skip, ...copy2 } = copy; // файл импорта в тестах не пишем (нет файловой системы)
+    await act(async () => { await imp.props.onRestore(copy2); });
+    await flush();
+    if (!store.get('habits.v1')) throw new Error('восстановление не вернуло привычки');
+    const imp2 = r.root.findAll((n) => n.type === ImportScreen)[0];
+    if (imp2) await act(async () => { imp2.props.onBack(); });
     await flush();
     // Гостевой режим: экраны с данными не рисуются; выход возвращает их.
     const { Shield } = require(path.join(ROOT, 'lib/Shield'));
