@@ -66,3 +66,38 @@ test('успешный день остаётся успешным, даже ес
   r = computePeaks(r.state, {}, '2026-01-05');
   expect(r.peaks.total).toBe(5);
 });
+
+describe('свои привычки и график', () => {
+  const { computePeaks: cp } = require('../lib/peaks');
+  const S = require('../lib/schedule');
+  const H = require('../lib/habits');
+  let h = H.addHabit(null, { catalogId: 'walk', required: true });
+  h = H.addHabit(h, { catalogId: 'read' });
+  h = H.addHabit(h, { catalogId: 'steps' });
+  h = { ...h, minOptional: 1 };
+  test('успешный день: все обязательные + нужное число дополнительных; шаги засчитываются сами', () => {
+    let x = H.toggleDone(h, 'walk', '2026-03-01');
+    expect(H.daySummary(x, '2026-03-01', null, null).success).toBe(false);
+    expect(H.daySummary(x, '2026-03-01', null, { met: { steps: true }, got: {} }).success).toBe(true);
+    x = H.toggleDone(x, 'read', '2026-03-02');
+    expect(H.daySummary(x, '2026-03-02', null, null).success).toBe(false); // нет обязательной
+    const r = cp(null, { '2026-03-01': { met: { steps: true }, got: {} } }, '2026-03-01', false, { habits: x });
+    expect(r.peaks.streak).toBe(1);
+  });
+  test('привычка «только в рабочие дни» не требуется в выходной', () => {
+    const s = S.applyPreset(null, '5_2', '2026-11-02');
+    const y = H.updateHabit(h, 'walk', { days: 'work' });
+    const sat = H.toggleDone(y, 'read', '2026-11-07');
+    expect(H.daySummary(sat, '2026-11-07', s, null).success).toBe(true);
+  });
+  test('дни отдыха по графику не рвут серию; правка графика задним числом прошлое не меняет', () => {
+    const okRec = { got: { sleep: 12, water: 6, log: 4 }, met: {} };
+    const sched = S.setOverride(S.DEFAULT_SCHEDULE, '2026-04-03', 'rest');
+    let r = cp(null, { '2026-04-01': okRec, '2026-04-02': okRec }, '2026-04-02', false, { sched });
+    r = cp(r.state, { '2026-04-04': okRec }, '2026-04-04', false, { sched });
+    expect(r.peaks.streak).toBe(3);
+    const later = S.setOverride(sched, '2026-04-03', null); // отменили отдых задним числом
+    r = cp(r.state, {}, '2026-04-05', false, { sched: later });
+    expect(r.peaks.streak).toBe(3);
+  });
+});

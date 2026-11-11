@@ -211,6 +211,33 @@ async function runApp({ lang, stored, theme }) {
     await flush();
     const sc = r.root.findAll((n) => n.type === Scene3D);
     if (!sc.length || !sc[0].props.quick) throw new Error('сцена не вернулась (или снова рисует набросок)');
+    // График и привычки: экраны открываются из профиля; привычка отмечается на «Прогрессе».
+    for (const k of ['schedule', 'habits']) {
+      await act(async () => { r.root.findAll((n) => n.type === PS)[0].props.onOpen(k); });
+      await flush();
+      const t = texts();
+      if (!t.toLowerCase().includes(lang === 'ru' ? (k === 'schedule' ? 'календарь' : 'каталог') : (k === 'schedule' ? 'calendar' : 'catalog'))) throw new Error('экран ' + k + ' не открылся');
+      await act(async () => { r.root.findAll((n) => n.type === (k === 'schedule' ? require(path.join(ROOT, 'lib/screens/ScheduleScreen')).ScheduleScreen : require(path.join(ROOT, 'lib/screens/HabitsScreen')).HabitsScreen))[0].props.onBack(); });
+      await flush();
+    }
+    const { HabitsScreen } = require(path.join(ROOT, 'lib/screens/HabitsScreen'));
+    await act(async () => { r.root.findAll((n) => n.type === PS)[0].props.onOpen('habits'); });
+    await flush();
+    await act(async () => { r.root.findAll((n) => n.type === HabitsScreen)[0].props.onSave({ v: 1, list: [{ id: 'walk', catalogId: 'walk', days: 'all', required: true }], minOptional: 0, log: {} }); });
+    await flush();
+    await act(async () => { r.root.findAll((n) => n.type === HabitsScreen)[0].props.onBack(); });
+    await flush();
+    const { GrowthScreen: GS } = require(path.join(ROOT, 'lib/screens/GrowthScreen'));
+    await act(async () => { r.root.findAll((n) => n.type === TabBar)[0].props.onChange('growth'); });
+    await flush();
+    const gs = r.root.findAll((n) => n.type === GS)[0];
+    if (!gs.props.habits || gs.props.habits.list.length !== 1) throw new Error('привычка не сохранилась');
+    await act(async () => { gs.props.onToggleHabit('walk'); });
+    await flush();
+    const gs2 = r.root.findAll((n) => n.type === GS)[0];
+    if (!gs2.props.habits.log[gs2.props.todayKey] || !gs2.props.habits.log[gs2.props.todayKey].walk) throw new Error('отметка привычки не сохранилась');
+    await act(async () => { r.root.findAll((n) => n.type === TabBar)[0].props.onChange('profile'); });
+    await flush();
     // Гостевой режим: экраны с данными не рисуются; выход возвращает их.
     const { Shield } = require(path.join(ROOT, 'lib/Shield'));
     await act(async () => { r.root.findAll((n) => n.type === PS)[0].props.onOpen('guest'); });

@@ -25,6 +25,11 @@ import { loadFeedback, saveFeedback, pickTip, isAccepted } from './lib/chironFee
 import { CalmMode } from './lib/CalmMode';
 import { Shield } from './lib/Shield';
 import { unlock, setScreenGuard } from './lib/appLock';
+import { normalize as normSchedule, bioKey, isRest as schedIsRest, setOverride } from './lib/schedule';
+import { loadHabits, saveHabits, toggleDone } from './lib/habits';
+import { restSuggestion } from './lib/restAdvisor';
+import { ScheduleScreen } from './lib/screens/ScheduleScreen';
+import { HabitsScreen } from './lib/screens/HabitsScreen';
 import { reduceMotion } from './lib/motion';
 import { SetupScreen } from './lib/screens/SetupScreen';
 import { PermissionsScreen } from './lib/screens/PermissionsScreen';
@@ -104,6 +109,9 @@ function Main() {
   const [locked, setLocked] = useState(false);
   const [guest, setGuest] = useState(false);
   const leftAt = useRef(0);
+  const [habits, setHabits] = useState(null);
+  useEffect(() => { loadHabits().then(setHabits).catch(() => {}); }, []);
+  const saveH = useCallback((h) => { setHabits(h); saveHabits(h); }, []);
   useEffect(() => { loadPeaks().then((p) => { if (p) setPeaks((cur) => cur || p); }).catch(() => {}); loadFeedback().then(setFeedback).catch(() => {}); }, []);
   // Подробный экран: { key, arg, from } — палитра берётся от вкладки, с которой открыли.
   const [detail, setDetail] = useState(null);
@@ -353,16 +361,39 @@ function Main() {
     if (lockOn && !(await unlock(tr('Разблокировать')))) return;
     setLocked(false); setGuest(false);
   }, [lockOn]);
+  // Свой календарь смен и вахт (профиль) и «биологические сутки».
+  const schedule = useMemo(() => normSchedule(profile && profile.schedule), [profile]);
+  const todayKey = bioKey(schedule, now.getTime());
+  const saveSchedule = useCallback(async (sch) => {
+    const p = { ...profileRef.current, schedule: sch };
+    profileRef.current = p;
+    setProfile(p);
+    await saveProfile(p);
+  }, []);
+  // Совет Хирона отдохнуть или облегчить день: по графику, сну и нагрузке; применяется только после «да».
+  const rest = useMemo(() => {
+    const sc = result && result.scores;
+    const ready = sc && sc.readiness && sc.readiness.status === 'ok' ? sc.readiness.score : null;
+    const norm = sc && sc.sleep ? sc.sleep.norm : null;
+    const nights = (result && result.series && result.series.sleep) || [];
+    let poor = 0;
+    for (let i = nights.length - 1; i >= 0 && i >= nights.length - 3; i--) { if (norm && nights[i] && nights[i].v < norm - 0.5) poor++; else break; }
+    return restSuggestion({ sched: schedule, key: todayKey, tired: ready != null && ready < 45, sleepPoor: poor > 0, poorNights: poor, dismissed: profile && profile.restDismissed });
+  }, [result, schedule, todayKey, profile]);
+  const acceptRest = useCallback(() => { success(); saveSchedule(setOverride(schedule, todayKey, 'rest')); }, [schedule, todayKey, saveSchedule]);
+  const dismissRest = useCallback(() => { light(); onSettingsRef.current({ restDismissed: todayKey }); }, [todayKey]);
+  const onSettingsRef = useRef(null);
   const dayPlan = useDayPlan({
-    result, profile, weather, growth, entries, opens, now,
+    result, profile, weather, growth, entries, opens, now, schedRest: schedIsRest(schedule, todayKey),
     onReward: (r) => { Promise.resolve(awardEvent(r.eventId, r.xp, r.journal)).then(takeGrowth).catch(() => {}); },
   });
-  // Вершины: пересчёт после каждого обновления роста; новая вершина — пролёт камеры и карточка.
-  const restToday = !!(dayPlan.plan && dayPlan.plan.mode === 'rest');
+  // Вершины: пересчёт после каждого обновления роста, отметки привычки или правки графика;
+  // новая вершина — пролёт камеры и карточка. День отдыха — по своему календарю или по совету Хирона.
+  const restToday = !!(dayPlan.plan && dayPlan.plan.mode === 'rest') || schedIsRest(schedule, todayKey);
   useEffect(() => {
     if (!growth) return undefined;
     let alive = true;
-    updatePeaks(Date.now(), restToday).then((r) => {
+    updatePeaks(Date.now(), restToday, { sched: schedule, habits }).then((r) => {
       if (!alive || !r || !r.peaks) return;
       setPeaks(r.peaks);
       if (r.fresh && r.fresh.length) {
@@ -372,7 +403,7 @@ function Main() {
       }
     }).catch(() => {});
     return () => { alive = false; };
-  }, [growth, restToday]);
+  }, [growth, restToday, schedule, habits]);
   const growthView = useMemo(() => {
     if (!growth || !rankUp || (growth.events || []).some((e) => e && e.type === 'rankUp')) return growth;
     return { ...growth, events: [...(growth.events || []), { type: 'rankUp', rank: rankUp }] };
@@ -481,7 +512,7 @@ function Main() {
       setHomeOpen(false);
       return true;
     }
-    if (['debug', 'tips', 'log', 'sleep', 'cycle', 'about', 'import', 'achievements', 'recap', 'workouts'].includes(screen) || (screen === 'setup' && profile) || (screen === 'permissions' && granted.size)) {
+    if (['debug', 'tips', 'log', 'sleep', 'cycle', 'about', 'import', 'achievements', 'recap', 'workouts', 'schedule', 'habits'].includes(screen) || (screen === 'setup' && profile) || (screen === 'permissions' && granted.size)) {
       setScreen('home');
       return true;
     }
@@ -596,6 +627,7 @@ function Main() {
     setProfile(p);
     setWeather(w.on ? await getWeather(w, true) : null);
   };
+  onSettingsRef.current = onSettings;
   const switchTab = (k) => { if (k !== tab) light(); setTab(k); };
   const deleteEntry = (e) => setAllEntries(entriesRef.current.filter((x) => x.id !== e.id));
   // Импорт: Apple Health, CSV (записи с теми же id заменяются), резервная копия.
@@ -742,6 +774,14 @@ function Main() {
               onStartToday={() => addEntry({ id: String(Date.now()), type: 'period', date: dayKey(new Date()), days: (result && result.cycle && result.cycle.periodLen) || 5, t: Date.now() })} />
           </ColorsContext.Provider>
         );
+      case 'schedule':
+        return <ColorsContext.Provider value={colors}><ScheduleScreen schedule={schedule} onSave={saveSchedule} onBack={goBack} /></ColorsContext.Provider>;
+      case 'habits':
+        return (
+          <ColorsContext.Provider value={colors}>
+            <HabitsScreen habits={habits} onSave={saveH} onBack={goBack} suggested={chironTip && chironTip.goal === 'sleep' ? ['bedtime', 'screens', 'sleep'] : ['walk', 'steps', 'stretch', 'sleep']} />
+          </ColorsContext.Provider>
+        );
       case 'tips':
         return (
           <ColorsContext.Provider value={colors}>
@@ -767,9 +807,12 @@ function Main() {
                 {tab === 'metrics' ? (
                   <MetricsScreen result={result} profile={profile} loading={loading} onRefresh={refresh} tip={chironTip}
                     tipAccepted={!!(chironTip && isAccepted(feedback, chironTip.id))} onTipAnswer={onTipAnswer}
+                    rest={rest} onRestAccept={acceptRest} onRestDismiss={dismissRest}
                     missingAccess={missingAccess} onAskAccess={onRequest} onOpen={open} />
                 ) : tab === 'growth' ? (
-                  <GrowthScreen growth={growthView} amb={amb} scene={sceneOn} peaks={peaks} plan={dayPlan.plan} activities={activities} water={water} noData={noData}
+                  <GrowthScreen growth={growthView} amb={amb} scene={sceneOn} peaks={peaks}
+                    habits={habits} schedule={schedule} todayKey={todayKey} onToggleHabit={(id) => { light(); saveH(toggleDone(habits, id, todayKey)); }} onOpen={open}
+                    rest={rest} onRestAccept={acceptRest} onRestDismiss={dismissRest} plan={dayPlan.plan} activities={activities} water={water} noData={noData}
                     arc={dayPlan.arc} onArcAct={dayPlan.actArc} achievements={achievements.list} />
                 ) : tab === 'profile' ? (
                   <ProfileScreen profile={profile} loading={loading} onOpen={open} onReload={refresh}
