@@ -117,8 +117,9 @@ jobs:
               './plugins/withThemedIcons',
               // 4 виджета домашнего экрана (светлая/тёмная тема — по системной); параметры — plugins/widgetsConfig.js.
               ['react-native-android-widget', require('./plugins/widgetsConfig.js')],
-              // Системный экран — только фон: логотип рисует экран загрузки приложения.
-              ['expo-splash-screen', { image: './assets/splash-blank.png', backgroundColor: '#06141B', imageWidth: 1 }],
+              // Системный экран — только фон в цвет листа бумаги (PAPER в lib/Scene3D.js): запуск начинается
+              // с чистого листа, на котором 3D-сцена рисует дерево, — переход без шва.
+              ['expo-splash-screen', { image: './assets/splash-blank.png', backgroundColor: '#F6F4EE', imageWidth: 1 }],
               ['expo-build-properties', { android: { minSdkVersion: 26, extraProguardRules: '-keep class com.rnllama.** { *; }' } }]
             ];
             fs.writeFileSync('app.json', JSON.stringify(c, null, 2));
@@ -128,7 +129,7 @@ jobs:
         working-directory: app
         run: |
           npm install
-          npx expo install react-native-health-connect expo-build-properties expo-splash-screen react-native-svg @react-native-async-storage/async-storage react-native-safe-area-context expo-document-picker expo-file-system expo-sharing expo-notifications expo-haptics react-native-view-shot expo-location expo-alternate-app-icons expo-system-ui react-native-android-widget llama.rn expo-intent-launcher
+          npx expo install react-native-health-connect expo-build-properties expo-splash-screen react-native-svg @react-native-async-storage/async-storage react-native-safe-area-context expo-document-picker expo-file-system expo-sharing expo-notifications expo-haptics react-native-view-shot expo-location expo-alternate-app-icons expo-system-ui react-native-android-widget llama.rn expo-intent-launcher react-native-webview
           npm install fflate@0.8.3
 
       - name: Prebuild Android project

@@ -1,0 +1,13 @@
+{
+  "name": "epimely-scene",
+  "private": true,
+  "description": "3D-сцена дерева (three.js). Собирается в один HTML-файл: lib/scene3d/sceneHtml.js.",
+  "scripts": {
+    "build": "node build.js",
+    "preview": "node build.js --preview"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "three": "0.187.0"
+  }
+}

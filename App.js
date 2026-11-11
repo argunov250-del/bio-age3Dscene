@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BackHandler, StatusBar, View, AppState, Appearance, Linking } from 'react-native';
+import { BackHandler, StatusBar, View, AppState, Appearance, Linking, Animated, Easing, PanResponder, Dimensions, StyleSheet } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ErrorBoundary } from './lib/ErrorScreen';
 import { applyTheme, resolveTheme } from './lib/theme';
@@ -16,6 +16,10 @@ import { TabBar, FadeIn } from './lib/ui';
 import { ScreenIn } from './lib/motion';
 import { IconHome, IconActivity, IconProfile, IconChiron, IconGrowth } from './lib/icons';
 import { LaunchScreen } from './lib/screens/LaunchScreen';
+import { SceneLaunch } from './lib/screens/SceneLaunch';
+import { Scene3D, PAPER } from './lib/Scene3D';
+import { sceneState } from './lib/sceneState';
+import { reduceMotion } from './lib/motion';
 import { SetupScreen } from './lib/screens/SetupScreen';
 import { PermissionsScreen } from './lib/screens/PermissionsScreen';
 import { NoHealthConnectScreen } from './lib/screens/NoHealthConnectScreen';
@@ -73,6 +77,11 @@ const TABS = [
   { key: 'profile', get title() { return tr('Профиль'); }, Icon: IconProfile },
 ];
 const TAB_KEYS = TABS.map((t) => t.key);
+// 3D-сцена на фоне: карточки вкладок чуть прозрачные, а между сценой и интерфейсом —
+// дымка в цвет темы, чтобы текст читался при любой погоде.
+const SCENE_CARD = { light: '#FFFFFFE3', dark: '#1A1C1FDE' };
+const SCENE_VEIL = 0.4;
+const SCENE_LOAD_MS = 6000; // сцена не загрузилась за это время — обычный экран запуска и фон
 
 function Main() {
   const insets = useSafeAreaInsets();
@@ -83,6 +92,24 @@ function Main() {
   const tabIndex = TAB_KEYS.indexOf(tab);
   const [ready, setReady] = useState(false);
   const [splash, setSplash] = useState(true);
+  // 3D-сцена: жива с первого кадра запуска; если WebView не смог её показать — прежний запуск и фон.
+  const sceneRef = useRef(null);
+  const [sceneOk, setSceneOk] = useState(true);
+  const [scenePhase, setScenePhase] = useState('loading');
+  const [appActive, setAppActive] = useState(true);
+  const uiIn = useRef(new Animated.Value(0)).current; // интерфейс проявляется поверх уже живой сцены
+  const swipeX = useRef(new Animated.Value(0)).current;
+  const onSceneEvent = useCallback((type) => {
+    if (type === 'error') { setSceneOk(false); return; }
+    if (type === 'loaded') setScenePhase((p) => (p === 'loading' ? 'sketch' : p));
+    else if (['sketched', 'revealing', 'half', 'real'].includes(type)) setScenePhase(type);
+  }, []);
+  useEffect(() => {
+    if (scenePhase !== 'loading' || !sceneOk) return undefined;
+    const id = setTimeout(() => setSceneOk(false), SCENE_LOAD_MS);
+    return () => clearTimeout(id);
+  }, [scenePhase, sceneOk]);
+  useEffect(() => { if (!sceneOk) uiIn.setValue(1); }, [sceneOk, uiIn]);
   const [profile, setProfile] = useState(null);
   // Тема (светлая/тёмная) из профиля: применяется сразу, на всём дереве (ключ ниже перерисовывает экраны).
   const [sysScheme, setSysScheme] = useState(() => { try { return Appearance.getColorScheme(); } catch (e) { return 'light'; } });
@@ -308,7 +335,44 @@ function Main() {
   const onIntroDone = useCallback(() => {
     introDone.current = true;
     setScreen(profile ? pendingRoute.current : 'setup');
-  }, [profile]);
+    Animated.timing(uiIn, { toValue: 1, duration: reduceMotion() ? 0 : 900, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+  }, [profile, uiIn]);
+  // Сцена остаётся фоном вкладок, если её не выключили в профиле.
+  const sceneOn = sceneOk && (splash || !profile || profile.scene3d !== false);
+  const sceneView = useMemo(() => {
+    const p = profile || {};
+    const st = sceneState(now, weather, { dark: colors.dark, period: p.ambience === 'day' ? 'day' : undefined });
+    return p.seasonFx === false ? { ...st, precip: null, storm: false, drift: null } : st;
+  }, [now, weather, colors.dark, profile]);
+  const tabTheme = useMemo(() => (sceneOn
+    ? { ...colors, card: SCENE_CARD[colors.dark ? 'dark' : 'light'], shadow: { ...colors.shadow, elevation: 0 } }
+    : colors), [colors, sceneOn]);
+  // Свайп по вкладкам: сцена поворачивается за пальцем; с последней вкладки — дальше по кругу, к первой.
+  const tabNow = useRef(tabIndex);
+  tabNow.current = tabIndex;
+  const swipe = useMemo(() => {
+    let lastSent = 0;
+    const W = () => Dimensions.get('window').width || 400;
+    const settle = () => Animated.spring(swipeX, { toValue: 0, useNativeDriver: true, bounciness: 0, speed: 18 }).start();
+    const cancel = () => { if (sceneRef.current) sceneRef.current.release(); settle(); };
+    return PanResponder.create({
+      onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) > 16 && Math.abs(g.dx) > Math.abs(g.dy) * 1.8,
+      onPanResponderMove: (_, g) => {
+        swipeX.setValue(g.dx);
+        const t = Date.now();
+        if (t - lastSent > 30 && sceneRef.current) { lastSent = t; sceneRef.current.drag(Math.max(-1, Math.min(1, g.dx / W()))); }
+      },
+      onPanResponderRelease: (_, g) => {
+        if (Math.abs(g.dx) > W() * 0.2 || (Math.abs(g.vx) > 0.45 && Math.abs(g.dx) > 30)) {
+          const n = TAB_KEYS.length;
+          light();
+          swipeX.setValue(0);
+          setTab(TAB_KEYS[(tabNow.current + (g.dx < 0 ? 1 : -1) + n) % n]);
+        } else cancel();
+      },
+      onPanResponderTerminate: cancel,
+    });
+  }, [swipeX]);
 
   // Открыть вкладку, подробный экран («detail:sleep», «workout:3») или отдельный экран.
   const open = useCallback((key) => {
@@ -418,6 +482,7 @@ function Main() {
   useEffect(() => {
     let prev = AppState.currentState;
     const sub = AppState.addEventListener('change', (st) => {
+      setAppActive(st === 'active');
       if (st === 'active' && prev !== 'active') {
         addOpen().then((list) => {
           opensRef.current = list;
@@ -531,14 +596,28 @@ function Main() {
     nav.tabDir = tabIndex > nav.tab ? 1 : -1;
     nav.tab = tabIndex;
   }
+  const W = Dimensions.get('window').width || 400;
+  const sceneLaunch = splash && sceneOk;
   const screenKey = screen === 'detail' && detail ? `detail:${detail.key}:${detail.arg}` : screen;
   // Экран запуска лежит поверх: когда логотип долетел до шапки, под ним уже
   // открывается главный экран, а запуск растворяется — без чёрной паузы.
   return (
-    <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <StatusBar barStyle={colors.dark ? 'light-content' : 'dark-content'} backgroundColor="transparent" translucent />
-      {screen === 'intro' ? null : <ScreenIn key={screenKey + ':' + (RU ? 'ru' : 'en') + ':' + themeName} dir={nav.dir}>{renderScreen()}</ScreenIn>}
-      {splash ? <ColorsContext.Provider value={colors}><LaunchScreen ready={ready} firstRun={ready && !profile} onReveal={onIntroDone} onDone={() => setSplash(false)} /></ColorsContext.Provider> : null}
+    <View style={{ flex: 1, backgroundColor: sceneLaunch ? PAPER : colors.bg }}>
+      <StatusBar barStyle={colors.dark && !(sceneLaunch && screen === 'intro') ? 'light-content' : 'dark-content'} backgroundColor="transparent" translucent />
+      {sceneOn ? (
+        <Scene3D ref={sceneRef} state={sceneView} tab={tabIndex} tabs={TAB_KEYS.length} lite={OLD_ANDROID} quick={reduceMotion() || !splash}
+          paused={!appActive || (!splash && screen !== 'home')} onEvent={onSceneEvent} />
+      ) : null}
+      <Animated.View style={{ flex: 1, opacity: uiIn }}>
+        {screen === 'intro' ? null : <ScreenIn key={screenKey + ':' + (RU ? 'ru' : 'en') + ':' + themeName} dir={nav.dir}>{renderScreen()}</ScreenIn>}
+      </Animated.View>
+      {splash ? (
+        <ColorsContext.Provider value={colors}>
+          {sceneOk
+            ? <SceneLaunch phase={scenePhase} ready={ready} firstRun={ready && !profile} reveal={() => sceneRef.current && sceneRef.current.reveal()} onReveal={onIntroDone} onDone={() => setSplash(false)} />
+            : <LaunchScreen ready={ready} firstRun={ready && !profile} onReveal={onIntroDone} onDone={() => setSplash(false)} />}
+        </ColorsContext.Provider>
+      ) : null}
     </View>
   );
 
@@ -608,10 +687,12 @@ function Main() {
         );
       }
       default: {
-        const theme = colors;
+        const theme = tabTheme;
         return (
-          <View style={{ flex: 1, backgroundColor: colors.bg }}>
+          <View style={{ flex: 1, backgroundColor: sceneOn ? 'transparent' : colors.bg }} {...swipe.panHandlers}>
+            {sceneOn ? <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: colors.bg, opacity: SCENE_VEIL }]} /> : null}
             <ColorsContext.Provider value={theme}>
+              <Animated.View style={{ flex: 1, opacity: swipeX.interpolate({ inputRange: [-W, 0, W], outputRange: [0.25, 1, 0.25] }), transform: [{ translateX: Animated.multiply(swipeX, 0.35) }] }}>
               <FadeIn key={tab} dir={nav.tabDir}>
                 {tab === 'coach' ? (
                   <CoachScreen result={result} profile={profile} tabbed bottom={insets.bottom} onBack={goBack} onTips={() => setScreen('tips')} extra={dayPlan.extra} onReply={dayPlan.onReply} />
@@ -619,7 +700,7 @@ function Main() {
                   <MetricsScreen result={result} profile={profile} loading={loading} onRefresh={refresh}
                     missingAccess={missingAccess} onAskAccess={onRequest} onOpen={open} />
                 ) : tab === 'growth' ? (
-                  <GrowthScreen growth={growthView} amb={amb} plan={dayPlan.plan} activities={activities} water={water} noData={noData}
+                  <GrowthScreen growth={growthView} amb={amb} scene={sceneOn} plan={dayPlan.plan} activities={activities} water={water} noData={noData}
                     arc={dayPlan.arc} onArcAct={dayPlan.actArc} achievements={achievements.list} />
                 ) : tab === 'profile' ? (
                   <ProfileScreen profile={profile} loading={loading} onOpen={open} onReload={refresh}
@@ -628,9 +709,10 @@ function Main() {
                     devMode={devMode} onDevUnlock={() => setDevMode(true)} />
                 ) : (
                   <HomeScreen result={result} profile={profile} loading={loading} error={error} onOpen={open} onRefresh={refresh}
-                    achievements={achievements.list} amb={amb} recap={recap} planLast={planLast} planFromHC={planFromHC} weather={weather} growth={growth} arc={dayPlan.arc} onArcAct={dayPlan.actArc} />
+                    achievements={achievements.list} amb={sceneOn ? null : amb} scene={sceneOn} recap={recap} planLast={planLast} planFromHC={planFromHC} weather={weather} growth={growth} arc={dayPlan.arc} onArcAct={dayPlan.actArc} />
                 )}
               </FadeIn>
+              </Animated.View>
             </ColorsContext.Provider>
             <TabBar tabs={TABS} active={tab} onChange={switchTab} bottom={insets.bottom} />
           </View>

@@ -79,6 +79,7 @@ async function runApp({ lang, stored, theme }) {
   jest.resetModules();
   jest.useFakeTimers();
   const store = new Map();
+  const sceneCalls = [];
   jest.resetModules();
   const mk = (name, factory) => jest.doMock(name, factory, { virtual: true });
   const RN = makeRN(lang);
@@ -120,6 +121,19 @@ async function runApp({ lang, stored, theme }) {
   mk('expo-location', () => ({ __esModule: true, requestForegroundPermissionsAsync: asyncFn({ granted: false }), getCurrentPositionAsync: asyncFn({}), Accuracy: {} }));
   for (const n of ['expo-document-picker', 'expo-file-system', 'expo-file-system/legacy', 'expo-sharing', 'react-native-view-shot']) mk(n, () => ({ __esModule: true, getDocumentAsync: asyncFn({ canceled: true }), isAvailableAsync: asyncFn(false), captureRef: asyncFn('') }));
   mk('fflate', () => ({ __esModule: true, unzipSync: () => ({}), strFromU8: () => '' }));
+  // 3D-сцена: WebView-заглушка сама проходит шаги запуска (лист → набросок → проявление).
+  mk('react-native-webview', () => {
+    const React = require('react'); // тот же экземпляр, что у приложения после resetModules
+    const WebView = React.forwardRef((props, ref) => {
+      const say = (type) => props.onMessage && props.onMessage({ nativeEvent: { data: JSON.stringify({ type }) } });
+      React.useImperativeHandle(ref, () => ({
+        injectJavaScript(js) { sceneCalls.push(js); if (js.includes('SCENE.reveal()')) setTimeout(() => { say('revealing'); say('half'); say('real'); }, 10); },
+      }));
+      React.useEffect(() => { const id = setTimeout(() => { say('loaded'); say('sketched'); }, 10); return () => clearTimeout(id); }, []);
+      return React.createElement('WebView', null);
+    });
+    return { __esModule: true, WebView, default: WebView };
+  });
   // Свежие данные из Health Connect подменяем готовым набором, чтобы экраны рисовались с данными.
   jest.doMock(path.join(ROOT, 'lib/metrics'), () => {
     const real = jest.requireActual(path.join(ROOT, 'lib/metrics'));
@@ -157,18 +171,40 @@ async function runApp({ lang, stored, theme }) {
     return t;
   };
   const seen = {};
-  const launch = r.root.findAll((n) => n.type === LaunchScreen);
-  if (launch.length) { await act(async () => { launch[0].props.onReveal(); }); await flush(); }
+  // Запуск идёт через 3D-сцену: обычного экрана запуска нет, сцена получила команду «проявиться».
+  const { SceneLaunch } = require(path.join(ROOT, 'lib/screens/SceneLaunch'));
+  const launch = r.root.findAll((n) => n.type === LaunchScreen || n.type === SceneLaunch);
+  if (r.root.findAll((n) => n.type === LaunchScreen).length) throw new Error('3D-сцена не запустилась: показан запасной экран запуска');
+  if (!sceneCalls.some((js) => js.includes('SCENE.reveal()'))) throw new Error('сцена не получила команду проявления: ' + JSON.stringify(sceneCalls).slice(0, 300) + ' launch=' + launch.length + ' props=' + JSON.stringify(launch[0] && { phase: launch[0].props.phase, ready: launch[0].props.ready }));
+  if (stored && launch.length) throw new Error('экран запуска не убран после проявления сцены');
+  if (launch.length) { await act(async () => { launch[0].props.onReveal(); launch[0].props.onDone(); }); await flush(); }
   seen.start = texts();
   if (stored) {
     const bar = r.root.findAll((n) => n.type === TabBar)[0];
     if (!bar) throw new Error('TabBar не отрисован; экран: ' + seen.start.slice(0, 1500));
+    if (!sceneCalls.some((js) => js.includes('SCENE.set('))) throw new Error('сцена не получила состояние (сезон, погода, тема)');
     for (const key of ['metrics', 'coach', 'growth', 'profile', 'home']) {
       const b = r.root.findAll((n) => n.type === TabBar)[0];
       await act(async () => { b.props.onChange(key); });
       await flush(); await flush();
       seen[key] = texts();
     }
+    // Вкладки поворачивают сцену; выключение в профиле убирает её, включение — возвращает сразу живой.
+    if (!sceneCalls.some((js) => js.includes('SCENE.tab(3)'))) throw new Error('сцена не повернулась к вкладке');
+    const { Scene3D } = require(path.join(ROOT, 'lib/Scene3D'));
+    const { ProfileScreen: PS } = require(path.join(ROOT, 'lib/screens/ProfileScreen'));
+    await act(async () => { r.root.findAll((n) => n.type === TabBar)[0].props.onChange('profile'); });
+    await flush();
+    await act(async () => { await r.root.findAll((n) => n.type === PS)[0].props.onSettings({ scene3d: false }); });
+    await flush();
+    if (r.root.findAll((n) => n.type === Scene3D).length) throw new Error('сцена не выключилась');
+    texts();
+    await act(async () => { await r.root.findAll((n) => n.type === PS)[0].props.onSettings({ scene3d: true }); });
+    await flush();
+    const sc = r.root.findAll((n) => n.type === Scene3D);
+    if (!sc.length || !sc[0].props.quick) throw new Error('сцена не вернулась (или снова рисует набросок)');
+    await act(async () => { r.root.findAll((n) => n.type === TabBar)[0].props.onChange('home'); });
+    await flush();
   }
   if (stored) {
     // Переключение языка и включение уведомлений: ремаунт по ключу, пересчёт, перепланирование.
