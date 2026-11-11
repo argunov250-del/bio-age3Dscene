@@ -282,6 +282,20 @@ async function runApp({ lang, stored, theme }) {
     await act(async () => { r.root.findAll((n) => n.type === CalmMode)[0].props.onClose(); });
     await flush();
     if (!r.root.findAll((n) => n.type === TabBar).length) throw new Error('после отдыха экран не вернулся');
+    // Полёт и карта: интерфейс уходит, сцена получает команды; снимок приходит кусками и сохраняется.
+    const { ExploreMode } = require(path.join(ROOT, 'lib/ExploreMode'));
+    await act(async () => { r.root.findAll((n) => n.type === HomeScreen)[0].props.onOpen('explore'); });
+    await flush();
+    const ex = r.root.findAll((n) => n.type === ExploreMode)[0];
+    if (!ex || r.root.findAll((n) => n.type === TabBar).length) throw new Error('полёт не открылся');
+    if (!sceneCalls.some((js) => js.includes('SCENE.explore("fly")'))) throw new Error('сцена не перешла в полёт');
+    if (!sceneCalls.some((js) => js.includes('SCENE.peaks('))) throw new Error('сцена не получила вершины');
+    await act(async () => { ex.props.onMode('map'); });
+    await flush();
+    if (!sceneCalls.some((js) => js.includes('SCENE.explore("map")'))) throw new Error('карта не открылась');
+    await act(async () => { r.root.findAll((n) => n.type === ExploreMode)[0].props.onClose(); });
+    await flush();
+    if (!r.root.findAll((n) => n.type === TabBar).length) throw new Error('после полёта экран не вернулся');
     // Сцена получила звук и дымку перерыва в своём состоянии.
     if (!sceneCalls.some((js) => /SCENE\.set\(\{.*"haze":.*"sound":/.test(js))) throw new Error('сцена не получила haze/sound');
   }

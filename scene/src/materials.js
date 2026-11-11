@@ -6,8 +6,10 @@ const mat = (U, own, vertexShader, fragmentShader, extra) => new THREE.ShaderMat
   uniforms: { ...U, ...own }, vertexShader: COMMON + vertexShader, fragmentShader: COMMON + fragmentShader, ...extra,
 });
 
-// Рельеф: скала со слоями, снег по высоте и уклону (граница снега зависит от сезона),
-// альпийские луга на пологих склонах летом, лёд на крутых участках ледника.
+// Рельеф. Высоты массива запечены в текстуру (world.js → buildHeightTexture): по ней в каждом
+// пикселе считаются нормаль, затенение впадин и тень от гор (луч к солнцу по карте высот) —
+// поэтому скалы рельефные, а склоны отбрасывают тени. Поверх — мелкий рельеф камня и наста.
+// Снег — по высоте и крутизне (граница зависит от сезона), луга на пологих склонах летом, лёд на перегибах.
 export const terrainMaterial = (U, own) => mat(U, own, /* glsl */ `
 varying vec3 vW; varying vec3 vN;
 void main(){
@@ -16,39 +18,78 @@ void main(){
   gl_Position = projectionMatrix * viewMatrix * w;
 }`, /* glsl */ `
 uniform vec3 uGrassA; uniform vec3 uGrassB;
+uniform sampler2D uHeight; uniform float uHExt; uniform float uHTexel; uniform float uShadowSteps;
 varying vec3 vW; varying vec3 vN;
+float hAt(vec2 xz){ return texture2D(uHeight, xz / (2.0 * uHExt) + 0.5).r; }
+float inMap(vec2 xz){ vec2 q = abs(xz) / uHExt; return smoothstep(1.0, 0.9, max(q.x, q.y)); }
+// мелкий рельеф камня: гребни и трещины (производные шума — без лишних выборок)
+float rockH(vec2 p){ float a = abs(noise2(p) * 2.0 - 1.0); float b = abs(noise2(p * 2.7 + 5.1) * 2.0 - 1.0); return (1.0 - a) * 0.65 + (1.0 - b) * 0.35; }
 void main(){
-  vec3 gN = normalize(vN);
   float dist = length(vW - cameraPosition);
-  float near = smoothstep(260.0, 40.0, dist); // мелкие детали только вблизи
+  float near = smoothstep(260.0, 30.0, dist);
+  float m = inMap(vW.xz);
+  // нормаль по карте высот (центральные разности), за её пределами — вершинная
+  float e = uHTexel;
+  float hL = hAt(vW.xz - vec2(e, 0.0)), hR = hAt(vW.xz + vec2(e, 0.0)), hD = hAt(vW.xz - vec2(0.0, e)), hU = hAt(vW.xz + vec2(0.0, e));
+  vec3 mapN = normalize(vec3(hL - hR, 2.0 * e, hD - hU));
+  vec3 gN = normalize(mix(normalize(vN), mapN, m));
+  // впадины темнее: высота против среднего вокруг
+  float r = e * 6.0;
+  float around = (hAt(vW.xz + vec2(r, 0.0)) + hAt(vW.xz - vec2(r, 0.0)) + hAt(vW.xz + vec2(0.0, r)) + hAt(vW.xz - vec2(0.0, r))) * 0.25;
+  float cav = clamp((vW.y - around) * 0.35 + 0.5, 0.0, 1.0);
+  float ao = mix(0.62 + 0.38 * smoothstep(-4.0, 22.0, vW.y), 0.35 + 0.65 * smoothstep(0.0, 0.75, cav), m);
+
+  // тень от гор: шаги по лучу к солнцу; мягкая по ближайшему промаху
+  float sh = 1.0;
+  if (m > 0.01 && uSunDir.y > 0.02) {
+    vec3 L = normalize(uSunDir);
+    float t = e * 2.0;
+    for (int i = 0; i < 24; i++) {
+      if (float(i) >= uShadowSteps) break;
+      vec3 q = vW + L * t;
+      float d = q.y - hAt(q.xz);
+      sh = min(sh, clamp(6.0 * d / t, 0.0, 1.0));
+      t *= 1.45;
+      if (q.y > 70.0 || sh < 0.02) break;
+    }
+    sh = mix(1.0, sh, m);
+  }
+
   float n1 = fbm2(vW.xz * 0.11), n2 = fbm2(vW.xz * 0.7 + 3.0), n3 = noise3(vW * 2.6) * 0.6 + noise3(vW * 7.3) * 0.4;
-  // камень: тёплые и холодные слои, трещины
-  float strata = sin(vW.y * 1.9 + n1 * 7.0 + vW.x * 0.05) * 0.5 + 0.5;
-  vec3 rock = mix(vec3(0.028, 0.026, 0.028), vec3(0.15, 0.125, 0.105), n1 * 0.65 + strata * 0.35);
-  rock = mix(rock, vec3(0.2, 0.17, 0.15), smoothstep(0.55, 0.85, n2) * 0.4);
-  rock *= 0.72 + 0.5 * n3 * near + 0.28 * (1.0 - near);
+  // камень: слои вдоль склона, тёплые и холодные породы, лишайник
+  float strata = sin(vW.y * 2.3 + n1 * 6.0 + dot(vW.xz, vec2(0.05, 0.03))) * 0.5 + 0.5;
+  vec3 rock = mix(vec3(0.035, 0.032, 0.033), vec3(0.17, 0.14, 0.115), n1 * 0.75 + strata * 0.15 + n3 * 0.1);
+  rock = mix(rock, vec3(0.23, 0.2, 0.17), smoothstep(0.58, 0.86, n2) * 0.45);
+  rock = mix(rock, vec3(0.13, 0.14, 0.08), smoothstep(0.62, 0.8, noise3(vW * 1.3 + 7.0)) * smoothstep(0.4, 0.8, gN.y) * 0.4);
+  // мелкий рельеф камня — в нормаль
+  vec2 rp = vW.xz * 1.7 + vec2(vW.y * 0.6, 0.0);
+  float r0 = rockH(rp), rx = rockH(rp + vec2(0.07, 0.0)), rz = rockH(rp + vec2(0.0, 0.07));
+  vec3 rN = normalize(gN + vec3(r0 - rx, 0.0, r0 - rz) * 5.0 * near + vec3(n2 - 0.5, 0.0, n1 - 0.5) * 0.35);
+  rock *= 0.7 + 0.5 * r0 * near + 0.25 * (1.0 - near);
   // луга: пологие склоны ниже границы снега
   float line = mix(17.0, -9.0, uSnow);
   float meadow = smoothstep(0.78, 0.93, gN.y) * smoothstep(line - 2.0, line - 8.0, vW.y + (n1 - 0.5) * 8.0) * smoothstep(0.35, 0.6, n1);
-  vec3 albedo = mix(rock, mix(uGrassA, uGrassB, n2) * (0.55 + 0.3 * n3), meadow * 0.8);
+  vec3 grass = mix(uGrassA, uGrassB, n2) * (0.55 + 0.3 * n3);
+  vec3 albedo = mix(rock, grass, meadow * 0.85);
   albedo *= 1.0 - uWet * 0.3;
-  vec3 n = normalize(gN + (vec3(n2 - 0.5, 0.0, fbm2(vW.xz * 0.7 + 9.0) - 0.5) * 0.9 + vec3(n3 - 0.5, 0.0, noise3(vW * 3.2 + 5.0) - 0.5) * 0.7 * near) * (1.0 - meadow * 0.6));
-  float ao = 0.62 + 0.38 * smoothstep(-4.0, 22.0, vW.y);
-  vec3 col = lit(albedo, n, ao, 1.0);
+  vec3 n = normalize(mix(rN, normalize(gN + vec3(n3 - 0.5, 0.0, n2 - 0.5) * 0.25), meadow));
+  vec3 col = lit(albedo, n, ao, sh);
 
-  // снег: выше границы, держится на пологом, с крутых стен сдувается
-  float hold = smoothstep(0.38, 0.66, gN.y + (n2 - 0.5) * 0.35);
+  // снег: выше границы, держится на пологом, с крутых стен сдувается; надувы по ветру
+  float hold = smoothstep(0.42, 0.7, gN.y + (n2 - 0.5) * 0.3 + (r0 - 0.5) * 0.15 * near);
   float sn = smoothstep(line - 3.0, line + 4.0, vW.y + (n1 - 0.5) * 9.0) * hold;
-  sn = max(sn, uSnow * hold * 0.9);
-  vec3 sN = normalize(gN + vec3(n2 - 0.5, 0.0, n1 - 0.5) * 0.22 + vec3(n3 - 0.5, 0.0, 0.0) * 0.12 * near);
-  vec3 snowAlb = vec3(0.6, 0.64, 0.7) * (0.94 + 0.08 * n3);
-  // лёд ледника проступает на перегибах
-  float ice = smoothstep(0.62, 0.48, gN.y) * smoothstep(14.0, 24.0, vW.y);
-  snowAlb = mix(snowAlb, vec3(0.26, 0.4, 0.52), ice * 0.55);
-  vec3 snowCol = lit(snowAlb, sN, 0.75 + 0.25 * ao, 1.0);
+  sn = max(sn, uSnow * hold * 0.92);
+  float drift = fbm2(vW.xz * 0.9 + 11.0);
+  vec3 sN = normalize(gN + vec3(drift - 0.5, 0.0, n1 - 0.5) * 0.28 + vec3(n3 - 0.5, 0.0, 0.0) * 0.1 * near);
+  vec3 snowAlb = vec3(0.6, 0.64, 0.7) * (0.95 + 0.06 * n3);
+  float ice = smoothstep(0.64, 0.5, gN.y) * smoothstep(14.0, 24.0, vW.y);
+  snowAlb = mix(snowAlb, vec3(0.24, 0.38, 0.5), ice * 0.6);
+  vec3 snowCol = lit(snowAlb, sN, 0.7 + 0.3 * ao, sh);
+  // в тени снег голубой (свет неба), а не серый
+  snowCol += snowAlb * uSkyAmb * (1.0 - sh) * 0.35;
   vec3 v = normalize(cameraPosition - vW);
-  snowCol += uSunCol * pow(max(dot(reflect(-uSunDir, sN), v), 0.0), 24.0) * 0.18;         // блеск наста
-  snowCol += uSunCol * step(0.985, noise3(vW * 9.0)) * near * max(dot(sN, uSunDir), 0.0) * 0.6; // искры
+  snowCol += uSunCol * pow(max(dot(reflect(-uSunDir, sN), v), 0.0), 28.0) * 0.2 * sh;
+  snowCol += uSunCol * step(0.986, noise3(vW * 9.0)) * near * max(dot(sN, uSunDir), 0.0) * 0.6 * sh;
   col = mix(col, snowCol, sn);
 
   // подножие тонет в море облаков

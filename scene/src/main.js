@@ -4,13 +4,16 @@
 // Погода, время суток и сезон меняют мир без переключений: числа плавно перетекают.
 // Управление — window.SCENE (его вызывает приложение через WebView, см. lib/Scene3D.js).
 import * as THREE from 'three';
-import { buildTerrain, buildCloudSea, CLOUD_Y } from './world';
+import { buildTerrain, buildCloudSea, buildHeightTexture, CLOUD_Y } from './world';
 import { terrainMaterial, cloudSeaMaterial, skyMaterial, fallMaterial } from './materials';
 import { envFor, DEFAULT_STATE } from './env';
 import { makeSound } from './sound';
+import { makeExplore } from './explore';
 
 const INIT = window.__INIT || {};
 const lite = !!INIT.lite;
+// Качество: 0 — экономное, 1 — сбалансированное, 2 — максимальное (из профиля; слабым телефонам — 0).
+const QUALITY = INIT.quality != null ? INIT.quality : lite ? 0 : 1;
 const TABS = INIT.tabs || 4;
 const post = (type, data) => { try { if (window.ReactNativeWebView) window.ReactNativeWebView.postMessage(JSON.stringify({ type, ...data })); } catch (e) {} };
 
@@ -22,7 +25,7 @@ try {
   throw e;
 }
 // Качество подстраивается под телефон: если кадры идут медленно, разрешение снижается само.
-let DPR = Math.min(window.devicePixelRatio || 1, lite ? 1 : 1.75);
+let DPR = Math.min(window.devicePixelRatio || 1, [1, 1.75, 2.25][QUALITY]);
 renderer.setPixelRatio(DPR);
 renderer.outputColorSpace = THREE.LinearSRGBColorSpace; // цвет переводят сами шейдеры
 document.body.appendChild(renderer.domElement);
@@ -44,7 +47,9 @@ const U = {
 };
 const grassU = { uGrassA: { value: new THREE.Color() }, uGrassB: { value: new THREE.Color() } };
 
-scene.add(new THREE.Mesh(buildTerrain(lite), terrainMaterial(U, grassU)));
+const HM = buildHeightTexture(QUALITY);
+const hmU = { uHeight: { value: HM.tex }, uHExt: { value: HM.ext }, uHTexel: { value: HM.texel }, uShadowSteps: { value: [8, 16, 24][QUALITY] } };
+scene.add(new THREE.Mesh(buildTerrain(lite), terrainMaterial(U, { ...grassU, ...hmU })));
 const sea = new THREE.Mesh(buildCloudSea(lite), cloudSeaMaterial(U, {}));
 sea.frustumCulled = false;
 scene.add(sea);
@@ -92,6 +97,7 @@ const eagle = (() => {
   };
 })();
 const sound = makeSound();
+const explore = makeExplore({ scene, camera, cur: { get cloudY() { return U.uCloudY.value; } } });
 
 // ---- окружение: текущие значения плавно догоняют целевые ----
 let state = { ...DEFAULT_STATE, ...(INIT.state || {}) };
@@ -103,7 +109,7 @@ function applyEnv(k) {
   NUMS.forEach((n) => { cur[n] += (target[n] - cur[n]) * k; });
   COLS.forEach((n) => { cur[n].lerp(target[n], k); });
   cur.sunDir.lerp(target.sunDir, k).normalize();
-  U.uFogColor.value.copy(cur.fogColor); U.uFog.value = cur.fog;
+  U.uFogColor.value.copy(cur.fogColor); U.uFog.value = cur.fog * (1 - 0.7 * (typeof explore !== 'undefined' ? explore.mapK : 0));
   U.uSunDir.value.copy(cur.sunDir); U.uSunCol.value.copy(cur.sunCol);
   U.uSkyAmb.value.copy(cur.skyAmb); U.uGroundAmb.value.copy(cur.groundAmb);
   U.uSnow.value = cur.snow; U.uWet.value = cur.wet; U.uWind.value = cur.wind;
@@ -180,13 +186,52 @@ const easeOut = (x) => 1 - Math.pow(1 - x, 3);
 const easeInOut = (x) => (x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2);
 
 let nextFlash = 3, flash = 0;
+
+// ---- съёмка ----
+let pendingShot = null;
+function sendChunks(type, id, data, extra) {
+  const SIZE = 400000 - (400000 % 4); // кратно 4 знакам base64 — куски склеиваются без порчи
+  const n = Math.ceil(data.length / SIZE) || 1;
+  for (let i = 0; i < n; i++) post(type, { id, i, n, part: data.slice(i * SIZE, (i + 1) * SIZE), ...(i === n - 1 ? extra : {}) });
+}
+function takeShot(id, scale) {
+  // кадр рисуется заново и читается в том же такте (буфер WebGL после показа очищается)
+  pendingShot = () => {
+    try {
+      const url = renderer.domElement.toDataURL('image/jpeg', 0.93);
+      sendChunks('shot', id, url.slice(url.indexOf(',') + 1), { mime: 'image/jpeg' });
+    } catch (e) { post('shot', { id, error: String(e && e.message) }); }
+  };
+  busyUntil = performance.now() + 500;
+}
+function canRecord() {
+  try { return typeof MediaRecorder === 'function' && typeof renderer.domElement.captureStream === 'function' && ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].some((t) => MediaRecorder.isTypeSupported(t)); } catch (e) { return false; }
+}
+function recordClip(id, seconds) {
+  if (!canRecord()) { post('clip', { id, error: 'unsupported' }); return; }
+  const type = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find((t) => MediaRecorder.isTypeSupported(t));
+  const stream = renderer.domElement.captureStream(30);
+  const rec = new MediaRecorder(stream, { mimeType: type, videoBitsPerSecond: 6000000 });
+  const parts = [];
+  rec.ondataavailable = (e) => { if (e.data && e.data.size) parts.push(e.data); };
+  rec.onstop = () => {
+    const fr = new FileReader();
+    fr.onload = () => { const s = String(fr.result); sendChunks('clip', id, s.slice(s.indexOf(',') + 1), { mime: 'video/webm' }); };
+    fr.readAsDataURL(new Blob(parts, { type: 'video/webm' }));
+  };
+  rec.start(500);
+  busyUntil = performance.now() + seconds * 1000 + 500;
+  if (celebT < 0 && !explore.active) celebT = Math.max(0, CELEB_S - seconds); // в кадре — пролёт над массивом
+  setTimeout(() => { try { rec.stop(); } catch (e) {} }, seconds * 1000);
+  post('recording', { id, seconds });
+}
 let last = performance.now(), acc = 0, time = 0, slow = 0, frames = 0;
 function frame(now) {
   requestAnimationFrame(frame);
   if (paused) { last = now; return; }
   const dtRaw = Math.min(0.1, (now - last) / 1000);
   // В покое хватает 30 кадров в секунду (на слабых телефонах — 20): бережём батарею.
-  const active = phase === 'fly' || celebT >= 0 || now < busyUntil || Math.abs(rotTarget - rot) > 0.002;
+  const active = phase === 'fly' || celebT >= 0 || explore.active || now < busyUntil || Math.abs(rotTarget - rot) > 0.002;
   acc += dtRaw; last = now;
   const minStep = active ? 0 : lite ? 1 / 20 : 1 / 30;
   if (acc < minStep - 0.002) return;
@@ -225,9 +270,11 @@ function frame(now) {
 
   if (celebT >= 0) { celebT += dt; if (celebT >= CELEB_S) { celebT = -1; post('celebrated'); } }
   eagle(time);
-  sound.update(cur.wind, cur.rain, time);
   placeCamera(time);
+  explore.update(dt, time, (window.innerHeight || 640) * DPR / 780);
+  sound.update(cur.wind, cur.rain, time, Math.atan2(fwd.z, fwd.x), Math.atan2(U.uWindDir.value.y, U.uWindDir.value.x));
   renderer.render(scene, camera);
+  if (pendingShot) { const cb = pendingShot; pendingShot = null; cb(); }
 }
 
 // ---- управление из приложения ----
@@ -235,7 +282,7 @@ const api = {
   // Новое состояние (погода, время суток, сезон, тема): мир плавно перетекает в него.
   set(s) { state = { ...state, ...s }; target = envFor(state); busyUntil = performance.now() + 4000; sound.enable(!!state.sound); },
   // Кинематографичный пролёт в честь открытой вершины; stop — прервать (пользователь пропустил).
-  celebrate(stop) { if (stop) { if (celebT >= 0) celebT = Math.max(celebT, CELEB_S - 1.2); return; } if (phase === 'real' && celebT < 0) celebT = 0; },
+  celebrate(stop) { if (stop) { if (celebT >= 0) celebT = Math.max(celebT, CELEB_S - 1.2); return; } if (phase === 'real' && celebT < 0) { celebT = 0; sound.music('peak'); } },
   // Перейти к вкладке i: кратчайшим облётом, а с последней на первую — дальше по кругу.
   tab(i, instant) {
     const base = Math.round((rot - i) / TABS) * TABS + i;
@@ -246,9 +293,22 @@ const api = {
   drag(d) { if (dragBase == null) dragBase = rotTarget; rotTarget = dragBase - d; },
   release() { if (dragBase != null) { rotTarget = dragBase; dragBase = null; } },
   // long — первый запуск: долгий кинематографичный пролёт; иначе быстрое возвращение в мир.
-  reveal(long) { if (phase === 'fly' || phase === 'real') return; phase = 'fly'; phaseT = 0; flyMs = long ? (lite ? 4500 : 6500) : 1700; post('revealing'); },
+  reveal(long) { if (phase === 'fly' || phase === 'real') return; phase = 'fly'; phaseT = 0; flyMs = long ? (lite ? 4500 : 6500) : 1700; if (long) sound.music('intro'); post('revealing'); },
   skip() { phase = 'real'; introK = 1; veil.style.display = 'none'; post('real'); },
   pause(b) { paused = !!b; sound.suspend(paused); },
+  // Свободный полёт и карта вершин (управляет приложение: джойстик и жесты).
+  explore(m) { if (m === 'fly') explore.fly(); else if (m === 'map') explore.map(); else explore.exit(); busyUntil = performance.now() + 3000; },
+  move(f, s, u) { explore.move(f, s, u); },
+  turn(v) { explore.turn(v); },
+  look(dx, dy) { explore.look(dx, dy); },
+  peaks(list) { explore.setPeaks(list); },
+  pick(x, y) { const id = explore.pick(x, y, window.innerWidth || 360, window.innerHeight || 640); post('pick', { id }); return id; },
+  flyTo(id) { explore.flyTo(id); },
+  music(kind) { sound.music(kind); },
+  // Снимок кадра без интерфейса: JPEG кусками (сообщения WebView не любят мегабайты одним куском).
+  snapshot(id, scale) { takeShot(id, scale || 1); },
+  record(id, seconds) { recordClip(id, seconds || 10); },
+  canRecord() { return canRecord(); },
   debug: { get: () => ({ phase, rot, rotTarget, state, DPR }), seek(k) { phase = 'hold'; introK = k; veil.style.opacity = String(Math.max(0, 1 - k * 3)); } },
 };
 window.SCENE = api;
@@ -258,7 +318,7 @@ applyEnv(1);
 placeCamera(0);
 renderer.render(scene, camera);
 requestAnimationFrame((t) => { last = t; frame(t); });
-post('loaded', { lite });
+post('loaded', { lite, canRecord: canRecord() });
 if (quick) { post('half'); post('real'); }
 
 // Просмотр в браузере: стрелки — вкладки, параметры в адресе (#dark=true&precip=snow&snow=1…).

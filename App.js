@@ -23,6 +23,8 @@ import { loadPeaks, updatePeaks } from './lib/peaks';
 import { PeakUnlock } from './lib/PeaksCard';
 import { loadFeedback, saveFeedback, pickTip, isAccepted } from './lib/chironFeedback';
 import { CalmMode } from './lib/CalmMode';
+import { ExploreMode } from './lib/ExploreMode';
+import { collect, saveAndShare } from './lib/media';
 import { Shield } from './lib/Shield';
 import { unlock, setScreenGuard } from './lib/appLock';
 import { normalize as normSchedule, bioKey, isRest as schedIsRest, setOverride } from './lib/schedule';
@@ -111,6 +113,9 @@ function Main() {
   const [peakShow, setPeakShow] = useState(null);
   const [feedback, setFeedback] = useState({});
   const [calm, setCalm] = useState(false);
+  const [explore, setExplore] = useState(null); // null | 'fly' | 'map'
+  const [shooting, setShooting] = useState(null);
+  const [canRecord, setCanRecord] = useState(false);
   const [locked, setLocked] = useState(false);
   const [guest, setGuest] = useState(false);
   const leftAt = useRef(0);
@@ -135,8 +140,19 @@ function Main() {
   const [appActive, setAppActive] = useState(true);
   const uiIn = useRef(new Animated.Value(0)).current; // интерфейс проявляется поверх уже живой сцены
   const swipeX = useRef(new Animated.Value(0)).current;
-  const onSceneEvent = useCallback((type) => {
+  const onSceneEvent = useCallback((type, m) => {
     if (type === 'error') { setSceneOk(false); return; }
+    if (type === 'loaded' && m && m.canRecord) setCanRecord(true);
+    if (type === 'pick') { if (ExploreMode.onPick && m && m.id) ExploreMode.onPick(m.id); return; }
+    if (type === 'shot' || type === 'clip') {
+      if (m && m.error) { setShooting(null); return; }
+      const done = collect(m);
+      if (done) {
+        setShooting(null);
+        saveAndShare(done, 'epimely-' + (type === 'clip' ? 'video' : 'photo') + '-' + Date.now()).catch(() => {});
+      }
+      return;
+    }
     if (type === 'loaded') setScenePhase((p) => (p === 'loading' ? 'sketch' : p));
     else if (['sketched', 'revealing', 'half', 'real'].includes(type)) setScenePhase(type);
   }, []);
@@ -363,6 +379,14 @@ function Main() {
     });
     return () => { alive = false; clearTimeout(timer); unsub(); };
   }, [takeGrowth]);
+  // Маркеры вершин в 3D-мире: открытые, следующая цель и закрытые (за облаками).
+  useEffect(() => {
+    if (!peaks || !sceneRef.current) return;
+    const list = [];
+    ['discipline', 'constancy'].forEach((r) => (peaks[r] || []).forEach((p, i) => list.push({ id: p.id, ridge: r, index: i, unlocked: p.unlocked, next: !!(r === 'discipline' ? peaks.nextDiscipline && peaks.nextDiscipline.id === p.id : peaks.nextConstancy && peaks.nextConstancy.id === p.id) })));
+    sceneRef.current.peaks(list);
+  }, [peaks, scenePhase]);
+  useEffect(() => { if (explore && sceneRef.current) sceneRef.current.explore(explore); }, [explore]);
   // Блокировка: при запуске и после возвращения из фона (дольше 20 секунд).
   const lockOn = !!(profile && profile.lock);
   const lockArmed = useRef(false);
@@ -483,6 +507,7 @@ function Main() {
     if (key === 'debug' && !devMode) return;
     if (key === 'coach') key = 'tips'; // вкладки Хирона больше нет: старые ссылки ведут к его совету
     if (key === 'calm') { setCalm(true); return; }
+    if (key === 'explore' || key === 'map') { setExplore(key === 'map' ? 'map' : 'fly'); return; }
     if (key === 'guest') { setGuest(true); return; }
     if (TAB_KEYS.includes(key)) {
       setTab(key);
@@ -730,11 +755,20 @@ function Main() {
       <StatusBar barStyle={colors.dark && !(sceneLaunch && screen === 'intro') ? 'light-content' : 'dark-content'} backgroundColor="transparent" translucent />
       {sceneOn ? (
         <Scene3D ref={sceneRef} state={sceneView} tab={tabIndex} tabs={TAB_KEYS.length} lite={OLD_ANDROID} quick={reduceMotion() || !splash}
-          paused={!appActive || (!splash && screen !== 'home' && !calm && !locked && !guest)} onEvent={onSceneEvent} />
+          paused={!appActive || (!splash && screen !== 'home' && !calm && !explore && !locked && !guest)} onEvent={onSceneEvent}
+          quality={profile && profile.quality != null ? profile.quality : null} />
       ) : null}
       {/* Пока данные закрыты (блокировка, гость) или идёт отдых в горах, экраны не рисуются вовсе */}
       {!splash && (locked || guest) ? (
         <ColorsContext.Provider value={tabTheme}><Shield mode={locked ? 'lock' : 'guest'} onUnlock={doUnlock} /></ColorsContext.Provider>
+      ) : !splash && explore && sceneOn ? (
+        <ColorsContext.Provider value={tabTheme}>
+          <ExploreMode mode={explore} peaks={peaks} scene={sceneRef.current} canRecord={canRecord} busy={shooting}
+            onMode={(m) => { setExplore(m); if (sceneRef.current) sceneRef.current.explore(m); }}
+            onShot={() => { if (shooting || !sceneRef.current) return; setShooting('shot'); sceneRef.current.snapshot('p' + Date.now()); }}
+            onClip={() => { if (shooting || !sceneRef.current) return; setShooting('clip'); sceneRef.current.record('v' + Date.now(), 10); }}
+            onClose={() => { setExplore(null); if (sceneRef.current) sceneRef.current.explore(null); }} />
+        </ColorsContext.Provider>
       ) : !splash && calm && sceneOn ? (
         <ColorsContext.Provider value={tabTheme}><CalmMode onClose={() => setCalm(false)} /></ColorsContext.Provider>
       ) : (

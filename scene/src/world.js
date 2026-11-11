@@ -43,7 +43,10 @@ export function heightAt(x, z) {
   const range = Math.pow(ridged(x * 0.013 + 5, z * 0.013 + 1, 6), 1.7) * 62 * far * (0.45 + 0.75 * fbm(x * 0.004 + 8, z * 0.004, 2));
   const valley = -9 * sstep(30, 70, r);
   const fine = (fbm(x * 0.35, z * 0.35, 3) - 0.5) * 0.9 * (rough + far);
-  return massif + but + range + valley + fine;
+  // ледниковые кулуары и рёбра на куполах: вымоины сверху вниз, ближе к вершине мельче
+  const domeZone = sstep(9, 20, massif) * (1 - sstep(23.5, 25, massif) * 0.6);
+  const gully = (ridged(x * 0.11 + 31, z * 0.11 + 17, 4) - 0.45) * 3.2 * domeZone;
+  return massif + but + range + valley + fine + gully;
 }
 
 export function buildTerrain(lite) {
@@ -85,4 +88,23 @@ export function buildCloudSea(lite) {
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setIndex(idx);
   return g;
+}
+
+// Карта высот массива для шейдера: половинная точность (линейная фильтрация есть в WebGL2 всегда).
+export function buildHeightTexture(quality) {
+  const size = quality >= 2 ? 1024 : quality === 1 ? 512 : 256;
+  const ext = 130;
+  const data = new Uint16Array(size * size);
+  for (let j = 0; j < size; j++) {
+    const z = ((j + 0.5) / size * 2 - 1) * ext;
+    for (let i = 0; i < size; i++) {
+      const x = ((i + 0.5) / size * 2 - 1) * ext;
+      data[j * size + i] = THREE.DataUtils.toHalfFloat(heightAt(x, z));
+    }
+  }
+  const tex = new THREE.DataTexture(data, size, size, THREE.RedFormat, THREE.HalfFloatType);
+  tex.magFilter = THREE.LinearFilter; tex.minFilter = THREE.LinearFilter;
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.needsUpdate = true;
+  return { tex, ext, texel: (2 * ext) / size };
 }
