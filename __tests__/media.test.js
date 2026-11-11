@@ -9,10 +9,13 @@ test('куски в любом порядке собираются в исход
   const SIZE = 400; // кратно 4
   const n = Math.ceil(b64.length / SIZE);
   const msgs = Array.from({ length: n }, (_, i) => ({ id: 'x', i, n, part: b64.slice(i * SIZE, (i + 1) * SIZE), ...(i === n - 1 ? { mime: 'image/jpeg' } : {}) }));
-  expect(collect(msgs[2])).toBeNull();
-  expect(collect(msgs[2])).toBeNull();
-  expect(collect(msgs[0])).toBeNull();
-  const done = collect(msgs[1]);
+  const order = [...msgs.keys()].reverse(); // последний кусок первым
+  let done = null;
+  order.forEach((i, j) => {
+    const r = collect(msgs[i]);
+    if (j === 0) expect(collect(msgs[i])).toBeNull(); // повтор того же куска
+    if (j < order.length - 1) expect(r).toBeNull(); else done = r;
+  });
   expect(done.mime).toBe('image/jpeg');
   expect(Buffer.from(fromB64(done.b64)).equals(bytes)).toBe(true);
 });
