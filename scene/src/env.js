@@ -46,7 +46,8 @@ export function envFor(s) {
     sunDir: new THREE.Vector3(Math.cos(sky.az) * Math.cos(el), Math.sin(el), Math.sin(sky.az) * Math.cos(el)).normalize(),
     grassA: gA, grassB: gB,
     // туман поднимает море облаков к вершине и сгущает дымку
-    fog: 0.0013 + s.fog * 0.02 + (s.precip ? 0.004 : 0) + s.cloud * 0.0012,
+    // haze — дымка перерыва: дальние хребты тают, вершина рядом остаётся видна
+    fog: 0.0013 + s.fog * 0.02 + (s.precip ? 0.004 : 0) + s.cloud * 0.0012 + (s.haze || 0) * 0.0045,
     cloudY: 7 + s.fog * 9 + (s.precip ? 2.5 : 0),
     cloud: Math.max(s.cloud, gloom * 0.95, 0.05),
     stars: s.period === 'night' ? (s.dark ? 1 : 0.25) : 0,
@@ -58,4 +59,4 @@ export function envFor(s) {
   };
 }
 
-export const DEFAULT_STATE = { dark: false, period: 'day', snow: 0, grass: 1, tone: 1, precip: null, storm: false, fog: 0, cloud: 0.2, wind: 0.3 };
+export const DEFAULT_STATE = { dark: false, period: 'day', snow: 0, grass: 1, tone: 1, precip: null, storm: false, fog: 0, cloud: 0.2, wind: 0.3, haze: 0, sound: false };

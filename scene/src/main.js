@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import { buildTerrain, buildCloudSea, CLOUD_Y } from './world';
 import { terrainMaterial, cloudSeaMaterial, skyMaterial, fallMaterial } from './materials';
 import { envFor, DEFAULT_STATE } from './env';
+import { makeSound } from './sound';
 
 const INIT = window.__INIT || {};
 const lite = !!INIT.lite;
@@ -70,6 +71,28 @@ function makeFall(count, kind, box, speed, size, drift) {
 const rain = makeFall(lite ? 700 : 2400, 0, [18, 14, 18], 17, 110, 5);
 const snowfall = makeFall(lite ? 500 : 1500, 1, [22, 14, 22], 1.4, 15, 2.2);
 
+// Орёл: изредка проходит над склонами — часть мира, не награда и не задание.
+const eagle = (() => {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0.5, 0, 0, -0.45, -2.2, 0, -0.15, 0, 0, 0.5, 2.2, 0, -0.15, 0, 0, -0.45], 3));
+  const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: 0x15171a, side: THREE.DoubleSide }));
+  m.visible = false; m.frustumCulled = false;
+  scene.add(m);
+  let next = 40 + Math.random() * 80, t0 = -1, az0 = 0, dir = 1;
+  return (t) => {
+    if (t0 < 0) { if (t > next) { t0 = t; az0 = Math.random() * 6.28; dir = Math.random() < 0.5 ? 1 : -1; m.visible = true; } return; }
+    const k = (t - t0) / 34;
+    if (k >= 1) { t0 = -1; next = t + 120 + Math.random() * 180; m.visible = false; return; }
+    const a = az0 + dir * k * 2.2, r = 46 + Math.sin(k * 3.1) * 10;
+    m.position.set(Math.cos(a) * r, 27 + Math.sin(k * 5) * 3, Math.sin(a) * r);
+    m.rotation.set(0, -a - (dir > 0 ? 0 : Math.PI), dir * 0.25);
+    const flap = Math.sin(t * 2.2) * 0.35 * (0.3 + 0.7 * Math.max(0, Math.sin(t * 0.4))); // больше парит, чем машет
+    const p = g.getAttribute('position');
+    p.setY(2, flap); p.setY(4, flap); p.needsUpdate = true;
+  };
+})();
+const sound = makeSound();
+
 // ---- окружение: текущие значения плавно догоняют целевые ----
 let state = { ...DEFAULT_STATE, ...(INIT.state || {}) };
 let target = envFor(state);
@@ -107,6 +130,8 @@ const POSES = [
 const BASE_AZ = 1.25;
 let rot = INIT.tab || 0, rotTarget = rot, dragBase = null;
 let introK = 0; // 0 — в облаках у подножия, 1 — ракурс вкладки
+let celebT = -1; // пролёт в честь новой вершины: -1 — нет, иначе секунды от начала
+const CELEB_S = 9;
 const smooth = (x) => x * x * (3 - 2 * x);
 function poseAt(x) {
   const m = ((x % TABS) + TABS) % TABS;
@@ -121,9 +146,11 @@ function placeCamera(t) {
   const wide = camera.aspect > 1 ? 0.8 : 1;
   // медленное величественное парение: едва заметный облёт и дыхание высоты
   const drift = INIT.still ? 0 : Math.sin(t * 0.045) * 0.07 + Math.sin(t * 0.021 + 1.3) * 0.05;
-  const az = rot * STEP + BASE_AZ + p.off + drift * k - (1 - k) * 0.55;
-  const r = (p.r * (1 + (1 - k) * 0.35)) * wide;
-  const h = cur.cloudY + 0.5 + (Math.max(p.h, cur.cloudY + 3.5) - cur.cloudY - 0.5) * k + Math.sin(t * 0.06) * 0.5 * k;
+  // новая вершина: камера поднимается над облаками, облетает массив и возвращается на место
+  const ck = celebT < 0 ? 0 : celebT / CELEB_S, cs = Math.sin(Math.PI * ck);
+  const az = rot * STEP + BASE_AZ + p.off + drift * k - (1 - k) * 0.55 + ck * ck * (3 - 2 * ck) * Math.PI * 2;
+  const r = (p.r * (1 + (1 - k) * 0.35) + cs * 40) * wide;
+  const h = cur.cloudY + 0.5 + (Math.max(p.h, cur.cloudY + 3.5) - cur.cloudY - 0.5) * k + Math.sin(t * 0.06) * 0.5 * k + cs * 34;
   camera.position.set(Math.cos(az) * r, h, Math.sin(az) * r);
   camera.lookAt(p.look[0], p.look[1] - (1 - k) * 6, p.look[2]);
   camera.getWorldDirection(fwd);
@@ -159,7 +186,7 @@ function frame(now) {
   if (paused) { last = now; return; }
   const dtRaw = Math.min(0.1, (now - last) / 1000);
   // В покое хватает 30 кадров в секунду (на слабых телефонах — 20): бережём батарею.
-  const active = phase === 'fly' || now < busyUntil || Math.abs(rotTarget - rot) > 0.002;
+  const active = phase === 'fly' || celebT >= 0 || now < busyUntil || Math.abs(rotTarget - rot) > 0.002;
   acc += dtRaw; last = now;
   const minStep = active ? 0 : lite ? 1 / 20 : 1 / 30;
   if (acc < minStep - 0.002) return;
@@ -191,11 +218,14 @@ function frame(now) {
 
   if (cur.rain > 0.5 && target.storm) {
     nextFlash -= dt;
-    if (nextFlash <= 0) { flash = 1; nextFlash = 2.5 + Math.random() * 7; if (Math.random() < 0.5) setTimeout(() => { flash = 0.8; }, 140); }
+    if (nextFlash <= 0) { flash = 1; sound.thunder(0.6 + Math.random() * 0.4); nextFlash = 2.5 + Math.random() * 7; if (Math.random() < 0.5) setTimeout(() => { flash = 0.8; }, 140); }
   }
   flash = Math.max(0, flash - dt * 5.5);
   U.uFlash.value = flash * (state.dark ? 1.6 : 0.5);
 
+  if (celebT >= 0) { celebT += dt; if (celebT >= CELEB_S) { celebT = -1; post('celebrated'); } }
+  eagle(time);
+  sound.update(cur.wind, cur.rain, time);
   placeCamera(time);
   renderer.render(scene, camera);
 }
@@ -203,7 +233,9 @@ function frame(now) {
 // ---- управление из приложения ----
 const api = {
   // Новое состояние (погода, время суток, сезон, тема): мир плавно перетекает в него.
-  set(s) { state = { ...state, ...s }; target = envFor(state); busyUntil = performance.now() + 4000; },
+  set(s) { state = { ...state, ...s }; target = envFor(state); busyUntil = performance.now() + 4000; sound.enable(!!state.sound); },
+  // Кинематографичный пролёт в честь открытой вершины; stop — прервать (пользователь пропустил).
+  celebrate(stop) { if (stop) { if (celebT >= 0) celebT = Math.max(celebT, CELEB_S - 1.2); return; } if (phase === 'real' && celebT < 0) celebT = 0; },
   // Перейти к вкладке i: кратчайшим облётом, а с последней на первую — дальше по кругу.
   tab(i, instant) {
     const base = Math.round((rot - i) / TABS) * TABS + i;
@@ -216,7 +248,7 @@ const api = {
   // long — первый запуск: долгий кинематографичный пролёт; иначе быстрое возвращение в мир.
   reveal(long) { if (phase === 'fly' || phase === 'real') return; phase = 'fly'; phaseT = 0; flyMs = long ? (lite ? 4500 : 6500) : 1700; post('revealing'); },
   skip() { phase = 'real'; introK = 1; veil.style.display = 'none'; post('real'); },
-  pause(b) { paused = !!b; },
+  pause(b) { paused = !!b; sound.suspend(paused); },
   debug: { get: () => ({ phase, rot, rotTarget, state, DPR }), seek(k) { phase = 'hold'; introK = k; veil.style.opacity = String(Math.max(0, 1 - k * 3)); } },
 };
 window.SCENE = api;

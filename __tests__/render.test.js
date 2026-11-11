@@ -211,8 +211,27 @@ async function runApp({ lang, stored, theme }) {
     await flush();
     const sc = r.root.findAll((n) => n.type === Scene3D);
     if (!sc.length || !sc[0].props.quick) throw new Error('сцена не вернулась (или снова рисует набросок)');
+    // Гостевой режим: экраны с данными не рисуются; выход возвращает их.
+    const { Shield } = require(path.join(ROOT, 'lib/Shield'));
+    await act(async () => { r.root.findAll((n) => n.type === PS)[0].props.onOpen('guest'); });
+    await flush();
+    if (!r.root.findAll((n) => n.type === Shield).length || r.root.findAll((n) => n.type === TabBar).length) throw new Error('гостевой режим не скрыл данные');
+    await act(async () => { await r.root.findAll((n) => n.type === Shield)[0].props.onUnlock(); });
+    await flush();
+    if (r.root.findAll((n) => n.type === Shield).length) throw new Error('выход из гостевого режима не сработал');
     await act(async () => { r.root.findAll((n) => n.type === TabBar)[0].props.onChange('home'); });
     await flush();
+    // Режим спокойствия: интерфейс уходит, остаётся выбор времени; закрытие возвращает экран.
+    const { CalmMode } = require(path.join(ROOT, 'lib/CalmMode'));
+    await act(async () => { r.root.findAll((n) => n.type === HomeScreen)[0].props.onOpen('calm'); });
+    await flush();
+    if (!r.root.findAll((n) => n.type === CalmMode).length || r.root.findAll((n) => n.type === TabBar).length) throw new Error('режим спокойствия не открылся');
+    texts();
+    await act(async () => { r.root.findAll((n) => n.type === CalmMode)[0].props.onClose(); });
+    await flush();
+    if (!r.root.findAll((n) => n.type === TabBar).length) throw new Error('после отдыха экран не вернулся');
+    // Сцена получила звук и дымку перерыва в своём состоянии.
+    if (!sceneCalls.some((js) => /SCENE\.set\(\{.*"haze":.*"sound":/.test(js))) throw new Error('сцена не получила haze/sound');
   }
   if (stored) {
     // Переключение языка и включение уведомлений: ремаунт по ключу, пересчёт, перепланирование.

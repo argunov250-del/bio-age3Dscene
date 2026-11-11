@@ -19,6 +19,12 @@ import { LaunchScreen } from './lib/screens/LaunchScreen';
 import { SceneLaunch } from './lib/screens/SceneLaunch';
 import { Scene3D, PAPER } from './lib/Scene3D';
 import { sceneState } from './lib/sceneState';
+import { loadPeaks, updatePeaks } from './lib/peaks';
+import { PeakUnlock } from './lib/PeaksCard';
+import { loadFeedback, saveFeedback, pickTip, isAccepted } from './lib/chironFeedback';
+import { CalmMode } from './lib/CalmMode';
+import { Shield } from './lib/Shield';
+import { unlock, setScreenGuard } from './lib/appLock';
 import { reduceMotion } from './lib/motion';
 import { SetupScreen } from './lib/screens/SetupScreen';
 import { PermissionsScreen } from './lib/screens/PermissionsScreen';
@@ -90,6 +96,15 @@ function Main() {
   const [tab, setTab] = useState('home');
   // «Главная» открывается чистым пейзажем; свайп вверх раскрывает панель с показателями.
   const [homeOpen, setHomeOpen] = useState(false);
+  // Вершины за регулярность, ответы на советы Хирона, режим спокойствия, блокировка и гостевой режим.
+  const [peaks, setPeaks] = useState(null);
+  const [peakShow, setPeakShow] = useState(null);
+  const [feedback, setFeedback] = useState({});
+  const [calm, setCalm] = useState(false);
+  const [locked, setLocked] = useState(false);
+  const [guest, setGuest] = useState(false);
+  const leftAt = useRef(0);
+  useEffect(() => { loadPeaks().then((p) => { if (p) setPeaks((cur) => cur || p); }).catch(() => {}); loadFeedback().then(setFeedback).catch(() => {}); }, []);
   // Подробный экран: { key, arg, from } — палитра берётся от вкладки, с которой открыли.
   const [detail, setDetail] = useState(null);
   const tabIndex = TAB_KEYS.indexOf(tab);
@@ -285,7 +300,9 @@ function Main() {
   }, [profile, now, weather]);
   const recap = useMemo(() => weekRecap(result, achievements.list), [result, achievements]);
   // Главный совет Хирона для карточки на «Здоровье» (правила lib/recommend.js, без модели).
-  const chironTip = useMemo(() => { try { const r = result ? recommend(result, profile) : null; return r && r.main ? r.main : null; } catch (e) { return null; } }, [result, profile]);
+  // Отклонённые и отложенные советы пропускаются (lib/chironFeedback.js).
+  const chironTip = useMemo(() => { try { return result ? pickTip(recommend(result, profile), feedback) : null; } catch (e) { return null; } }, [result, profile, feedback]);
+  const onTipAnswer = useCallback((id, s) => { if (s === 'accepted') success(); else light(); saveFeedback(feedback, id, s).then(setFeedback); }, [feedback]);
   setLite(profile && profile.lite); // облегчённый режим читается при отрисовке
   useEffect(() => { setHaptics(profile && profile.haptics); }, [profile]);
 
@@ -327,10 +344,35 @@ function Main() {
     });
     return () => { alive = false; clearTimeout(timer); unsub(); };
   }, [takeGrowth]);
+  // Блокировка: при запуске и после возвращения из фона (дольше 20 секунд).
+  const lockOn = !!(profile && profile.lock);
+  const lockArmed = useRef(false);
+  useEffect(() => { if (lockOn && !lockArmed.current) { lockArmed.current = true; setLocked(true); } if (!lockOn) { lockArmed.current = false; setLocked(false); } }, [lockOn]);
+  useEffect(() => { setScreenGuard(lockOn || !!(profile && profile.noShots)); }, [lockOn, profile]);
+  const doUnlock = useCallback(async () => {
+    if (lockOn && !(await unlock(tr('Разблокировать')))) return;
+    setLocked(false); setGuest(false);
+  }, [lockOn]);
   const dayPlan = useDayPlan({
     result, profile, weather, growth, entries, opens, now,
     onReward: (r) => { Promise.resolve(awardEvent(r.eventId, r.xp, r.journal)).then(takeGrowth).catch(() => {}); },
   });
+  // Вершины: пересчёт после каждого обновления роста; новая вершина — пролёт камеры и карточка.
+  const restToday = !!(dayPlan.plan && dayPlan.plan.mode === 'rest');
+  useEffect(() => {
+    if (!growth) return undefined;
+    let alive = true;
+    updatePeaks(Date.now(), restToday).then((r) => {
+      if (!alive || !r || !r.peaks) return;
+      setPeaks(r.peaks);
+      if (r.fresh && r.fresh.length) {
+        success();
+        setPeakShow(r.fresh[r.fresh.length - 1]);
+        if (sceneRef.current) sceneRef.current.celebrate();
+      }
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [growth, restToday]);
   const growthView = useMemo(() => {
     if (!growth || !rankUp || (growth.events || []).some((e) => e && e.type === 'rankUp')) return growth;
     return { ...growth, events: [...(growth.events || []), { type: 'rankUp', rank: rankUp }] };
@@ -347,8 +389,10 @@ function Main() {
   const sceneView = useMemo(() => {
     const p = profile || {};
     const st = sceneState(now, weather, { dark: colors.dark, period: p.ambience === 'day' ? 'day' : undefined });
-    return p.seasonFx === false ? { ...st, precip: null, storm: false } : st;
-  }, [now, weather, colors.dark, profile]);
+    const base = p.seasonFx === false ? { ...st, precip: null, storm: false } : st;
+    // дымка перерыва на дальних хребтах и звуки природы (выключаются в профиле)
+    return { ...base, haze: peaks ? peaks.haze : 0, sound: p.sound !== false && !!profile };
+  }, [now, weather, colors.dark, profile, peaks]);
   const tabTheme = useMemo(() => (sceneOn
     ? { ...colors, card: (sceneView.storm || sceneView.fog ? SCENE_CARD_STORM : SCENE_CARD)[colors.dark ? 'dark' : 'light'], shadow: { ...colors.shadow, elevation: 0 } }
     : colors), [colors, sceneOn, sceneView.storm, sceneView.fog]);
@@ -383,6 +427,8 @@ function Main() {
   const open = useCallback((key) => {
     if (key === 'debug' && !devMode) return;
     if (key === 'coach') key = 'tips'; // вкладки Хирона больше нет: старые ссылки ведут к его совету
+    if (key === 'calm') { setCalm(true); return; }
+    if (key === 'guest') { setGuest(true); return; }
     if (TAB_KEYS.includes(key)) {
       setTab(key);
       setScreen('home');
@@ -493,6 +539,8 @@ function Main() {
     let prev = AppState.currentState;
     const sub = AppState.addEventListener('change', (st) => {
       setAppActive(st === 'active');
+      if (st !== 'active' && prev === 'active') leftAt.current = Date.now();
+      if (st === 'active' && prev !== 'active' && profileRef.current && profileRef.current.lock && Date.now() - leftAt.current > 20000) setLocked(true);
       if (st === 'active' && prev !== 'active') {
         addOpen().then((list) => {
           opensRef.current = list;
@@ -616,11 +664,23 @@ function Main() {
       <StatusBar barStyle={colors.dark && !(sceneLaunch && screen === 'intro') ? 'light-content' : 'dark-content'} backgroundColor="transparent" translucent />
       {sceneOn ? (
         <Scene3D ref={sceneRef} state={sceneView} tab={tabIndex} tabs={TAB_KEYS.length} lite={OLD_ANDROID} quick={reduceMotion() || !splash}
-          paused={!appActive || (!splash && screen !== 'home')} onEvent={onSceneEvent} />
+          paused={!appActive || (!splash && screen !== 'home' && !calm && !locked && !guest)} onEvent={onSceneEvent} />
       ) : null}
-      <Animated.View style={{ flex: 1, opacity: uiIn }}>
-        {screen === 'intro' ? null : <ScreenIn key={screenKey + ':' + (RU ? 'ru' : 'en') + ':' + themeName} dir={nav.dir}>{renderScreen()}</ScreenIn>}
-      </Animated.View>
+      {/* Пока данные закрыты (блокировка, гость) или идёт отдых в горах, экраны не рисуются вовсе */}
+      {!splash && (locked || guest) ? (
+        <ColorsContext.Provider value={tabTheme}><Shield mode={locked ? 'lock' : 'guest'} onUnlock={doUnlock} /></ColorsContext.Provider>
+      ) : !splash && calm && sceneOn ? (
+        <ColorsContext.Provider value={tabTheme}><CalmMode onClose={() => setCalm(false)} /></ColorsContext.Provider>
+      ) : (
+        <Animated.View style={{ flex: 1, opacity: uiIn }}>
+          {screen === 'intro' ? null : <ScreenIn key={screenKey + ':' + (RU ? 'ru' : 'en') + ':' + themeName} dir={nav.dir}>{renderScreen()}</ScreenIn>}
+        </Animated.View>
+      )}
+      {peakShow && !splash && !locked && !guest ? (
+        <ColorsContext.Provider value={tabTheme}>
+          <PeakUnlock peak={peakShow} onClose={() => { setPeakShow(null); if (sceneRef.current) sceneRef.current.celebrate(true); }} />
+        </ColorsContext.Provider>
+      ) : null}
       {splash ? (
         <ColorsContext.Provider value={colors}>
           {sceneOk
@@ -706,9 +766,10 @@ function Main() {
               <FadeIn key={tab} dir={nav.tabDir}>
                 {tab === 'metrics' ? (
                   <MetricsScreen result={result} profile={profile} loading={loading} onRefresh={refresh} tip={chironTip}
+                    tipAccepted={!!(chironTip && isAccepted(feedback, chironTip.id))} onTipAnswer={onTipAnswer}
                     missingAccess={missingAccess} onAskAccess={onRequest} onOpen={open} />
                 ) : tab === 'growth' ? (
-                  <GrowthScreen growth={growthView} amb={amb} scene={sceneOn} plan={dayPlan.plan} activities={activities} water={water} noData={noData}
+                  <GrowthScreen growth={growthView} amb={amb} scene={sceneOn} peaks={peaks} plan={dayPlan.plan} activities={activities} water={water} noData={noData}
                     arc={dayPlan.arc} onArcAct={dayPlan.actArc} achievements={achievements.list} />
                 ) : tab === 'profile' ? (
                   <ProfileScreen profile={profile} loading={loading} onOpen={open} onReload={refresh}
@@ -717,7 +778,7 @@ function Main() {
                     devMode={devMode} onDevUnlock={() => setDevMode(true)} />
                 ) : (
                   <HomeScreen result={result} profile={profile} loading={loading} error={error} onOpen={open} onRefresh={refresh}
-                    achievements={achievements.list} amb={sceneOn ? null : amb} scene={sceneOn} open={homeOpen || !sceneOn} onToggle={setHomeOpen} recap={recap} planLast={planLast} planFromHC={planFromHC} weather={weather} growth={growth} arc={dayPlan.arc} onArcAct={dayPlan.actArc} />
+                    achievements={achievements.list} amb={sceneOn ? null : amb} scene={sceneOn} open={homeOpen || !sceneOn} onToggle={setHomeOpen} peaks={peaks} recap={recap} planLast={planLast} planFromHC={planFromHC} weather={weather} growth={growth} arc={dayPlan.arc} onArcAct={dayPlan.actArc} />
                 )}
               </FadeIn>
               </Animated.View>
