@@ -2,7 +2,8 @@ name: Build Android APK
 
 on:
   push:
-    branches: [main]
+    # ccr-* — рабочие ветки сессий Claude: сборку можно получить до слияния в main.
+    branches: [main, 'ccr-*']
   workflow_dispatch:
 
 jobs:
