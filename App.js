@@ -14,7 +14,7 @@ import { compute } from './lib/compute';
 import { buildDetail } from './lib/details';
 import { TabBar, FadeIn } from './lib/ui';
 import { ScreenIn } from './lib/motion';
-import { IconHome, IconActivity, IconProfile, IconChiron, IconGrowth } from './lib/icons';
+import { IconHome, IconActivity, IconProfile, IconGrowth } from './lib/icons';
 import { LaunchScreen } from './lib/screens/LaunchScreen';
 import { SceneLaunch } from './lib/screens/SceneLaunch';
 import { Scene3D, PAPER } from './lib/Scene3D';
@@ -36,7 +36,6 @@ import { DetailScreen } from './lib/screens/DetailScreen';
 import { TipsScreen } from './lib/screens/TipsScreen';
 import { SleepScheduleScreen } from './lib/screens/SleepScheduleScreen';
 import { LogScreen } from './lib/screens/LogScreen';
-import { CoachScreen } from './lib/screens/CoachScreen';
 import { CycleScreen } from './lib/screens/CycleScreen';
 import { AboutDataScreen } from './lib/screens/AboutDataScreen';
 import { ImportScreen } from './lib/screens/ImportScreen';
@@ -68,25 +67,29 @@ import { recommend } from './lib/recommend';
 import { setChironOpener } from './lib/chiron';
 import { DebugScreen } from './lib/screens/DebugScreen';
 
-// Вкладки; «Хирон» — центральная круглая кнопка панели.
+// Четыре вкладки. У Хирона своей вкладки нет: он живёт карточками на экранах
+// (совет дня, задания, арки) и раскрывается в «Совет на сегодня».
 const TABS = [
-  { key: 'home', get title() { return tr('Обзор'); }, Icon: IconHome },
-  { key: 'metrics', get title() { return tr('Метрики'); }, Icon: IconActivity },
-  { key: 'coach', get title() { return tr('Хирон'); }, Icon: IconChiron },
-  { key: 'growth', get title() { return RU ? 'Рост' : 'Growth'; }, Icon: IconGrowth },
+  { key: 'home', get title() { return tr('Главная'); }, Icon: IconHome },
+  { key: 'metrics', get title() { return tr('Здоровье'); }, Icon: IconActivity },
+  { key: 'growth', get title() { return tr('Прогресс'); }, Icon: IconGrowth },
   { key: 'profile', get title() { return tr('Профиль'); }, Icon: IconProfile },
 ];
 const TAB_KEYS = TABS.map((t) => t.key);
-// 3D-сцена на фоне: карточки вкладок чуть прозрачные, а между сценой и интерфейсом —
+// 3D-сцена на фоне (горный мир): карточки вкладок — полупрозрачное стекло, а между сценой и интерфейсом —
 // дымка в цвет темы, чтобы текст читался при любой погоде.
 const SCENE_CARD = { light: '#FFFFFFE3', dark: '#1A1C1FDE' };
+const SCENE_CARD_STORM = { light: '#FFFFFFF2', dark: '#1A1C1FF0' }; // гроза и туман: стекло плотнее, текст читается
 const SCENE_VEIL = 0.4;
+const SCENE_VEIL_CLEAR = 0.06; // «Главная» со свёрнутой панелью: почти чистый пейзаж
 const SCENE_LOAD_MS = 6000; // сцена не загрузилась за это время — обычный экран запуска и фон
 
 function Main() {
   const insets = useSafeAreaInsets();
   const [screen, setScreen] = useState('intro');
   const [tab, setTab] = useState('home');
+  // «Главная» открывается чистым пейзажем; свайп вверх раскрывает панель с показателями.
+  const [homeOpen, setHomeOpen] = useState(false);
   // Подробный экран: { key, arg, from } — палитра берётся от вкладки, с которой открыли.
   const [detail, setDetail] = useState(null);
   const tabIndex = TAB_KEYS.indexOf(tab);
@@ -281,6 +284,8 @@ function Main() {
     return { ...a, dim: a.dim + (gloomy ? 0.08 : 0), season: p.seasonFx === false ? null : fx };
   }, [profile, now, weather]);
   const recap = useMemo(() => weekRecap(result, achievements.list), [result, achievements]);
+  // Главный совет Хирона для карточки на «Здоровье» (правила lib/recommend.js, без модели).
+  const chironTip = useMemo(() => { try { const r = result ? recommend(result, profile) : null; return r && r.main ? r.main : null; } catch (e) { return null; } }, [result, profile]);
   setLite(profile && profile.lite); // облегчённый режим читается при отрисовке
   useEffect(() => { setHaptics(profile && profile.haptics); }, [profile]);
 
@@ -342,11 +347,11 @@ function Main() {
   const sceneView = useMemo(() => {
     const p = profile || {};
     const st = sceneState(now, weather, { dark: colors.dark, period: p.ambience === 'day' ? 'day' : undefined });
-    return p.seasonFx === false ? { ...st, precip: null, storm: false, drift: null } : st;
+    return p.seasonFx === false ? { ...st, precip: null, storm: false } : st;
   }, [now, weather, colors.dark, profile]);
   const tabTheme = useMemo(() => (sceneOn
-    ? { ...colors, card: SCENE_CARD[colors.dark ? 'dark' : 'light'], shadow: { ...colors.shadow, elevation: 0 } }
-    : colors), [colors, sceneOn]);
+    ? { ...colors, card: (sceneView.storm || sceneView.fog ? SCENE_CARD_STORM : SCENE_CARD)[colors.dark ? 'dark' : 'light'], shadow: { ...colors.shadow, elevation: 0 } }
+    : colors), [colors, sceneOn, sceneView.storm, sceneView.fog]);
   // Свайп по вкладкам: сцена поворачивается за пальцем; с последней вкладки — дальше по кругу, к первой.
   const tabNow = useRef(tabIndex);
   tabNow.current = tabIndex;
@@ -377,6 +382,7 @@ function Main() {
   // Открыть вкладку, подробный экран («detail:sleep», «workout:3») или отдельный экран.
   const open = useCallback((key) => {
     if (key === 'debug' && !devMode) return;
+    if (key === 'coach') key = 'tips'; // вкладки Хирона больше нет: старые ссылки ведут к его совету
     if (TAB_KEYS.includes(key)) {
       setTab(key);
       setScreen('home');
@@ -390,7 +396,7 @@ function Main() {
     } else setScreen(key);
   }, [tab, screen, devMode]);
 
-  useEffect(() => { setChironOpener(() => open('coach')); return () => setChironOpener(null); }, [open]);
+  useEffect(() => { setChironOpener(() => open('tips')); return () => setChironOpener(null); }, [open]);
 
   // Нажатие на виджет: epimely://tab/… или epimely://detail/… (схема задана в CI). Применяем, когда открыт главный экран.
   const [widgetLink, setWidgetLink] = useState(null);
@@ -425,12 +431,16 @@ function Main() {
       setTab('home');
       return true;
     }
+    if (screen === 'home' && homeOpen && sceneOn) {
+      setHomeOpen(false);
+      return true;
+    }
     if (['debug', 'tips', 'log', 'sleep', 'cycle', 'about', 'import', 'achievements', 'recap', 'workouts'].includes(screen) || (screen === 'setup' && profile) || (screen === 'permissions' && granted.size)) {
       setScreen('home');
       return true;
     }
     return false;
-  }, [screen, tab, detail, profile, granted]);
+  }, [screen, tab, detail, profile, granted, homeOpen, sceneOn]);
 
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', goBack);
@@ -614,7 +624,7 @@ function Main() {
       {splash ? (
         <ColorsContext.Provider value={colors}>
           {sceneOk
-            ? <SceneLaunch phase={scenePhase} ready={ready} firstRun={ready && !profile} reveal={() => sceneRef.current && sceneRef.current.reveal()} onReveal={onIntroDone} onDone={() => setSplash(false)} />
+            ? <SceneLaunch phase={scenePhase} ready={ready} firstRun={ready && !profile} reveal={(long) => sceneRef.current && sceneRef.current.reveal(long)} onReveal={onIntroDone} onDone={() => setSplash(false)} />
             : <LaunchScreen ready={ready} firstRun={ready && !profile} onReveal={onIntroDone} onDone={() => setSplash(false)} />}
         </ColorsContext.Provider>
       ) : null}
@@ -690,14 +700,12 @@ function Main() {
         const theme = tabTheme;
         return (
           <View style={{ flex: 1, backgroundColor: sceneOn ? 'transparent' : colors.bg }} {...swipe.panHandlers}>
-            {sceneOn ? <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: colors.bg, opacity: SCENE_VEIL }]} /> : null}
+            {sceneOn ? <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: colors.bg, opacity: tab === 'home' && !homeOpen ? SCENE_VEIL_CLEAR : SCENE_VEIL }]} /> : null}
             <ColorsContext.Provider value={theme}>
               <Animated.View style={{ flex: 1, opacity: swipeX.interpolate({ inputRange: [-W, 0, W], outputRange: [0.25, 1, 0.25] }), transform: [{ translateX: Animated.multiply(swipeX, 0.35) }] }}>
               <FadeIn key={tab} dir={nav.tabDir}>
-                {tab === 'coach' ? (
-                  <CoachScreen result={result} profile={profile} tabbed bottom={insets.bottom} onBack={goBack} onTips={() => setScreen('tips')} extra={dayPlan.extra} onReply={dayPlan.onReply} />
-                ) : tab === 'metrics' ? (
-                  <MetricsScreen result={result} profile={profile} loading={loading} onRefresh={refresh}
+                {tab === 'metrics' ? (
+                  <MetricsScreen result={result} profile={profile} loading={loading} onRefresh={refresh} tip={chironTip}
                     missingAccess={missingAccess} onAskAccess={onRequest} onOpen={open} />
                 ) : tab === 'growth' ? (
                   <GrowthScreen growth={growthView} amb={amb} scene={sceneOn} plan={dayPlan.plan} activities={activities} water={water} noData={noData}
@@ -709,7 +717,7 @@ function Main() {
                     devMode={devMode} onDevUnlock={() => setDevMode(true)} />
                 ) : (
                   <HomeScreen result={result} profile={profile} loading={loading} error={error} onOpen={open} onRefresh={refresh}
-                    achievements={achievements.list} amb={sceneOn ? null : amb} scene={sceneOn} recap={recap} planLast={planLast} planFromHC={planFromHC} weather={weather} growth={growth} arc={dayPlan.arc} onArcAct={dayPlan.actArc} />
+                    achievements={achievements.list} amb={sceneOn ? null : amb} scene={sceneOn} open={homeOpen || !sceneOn} onToggle={setHomeOpen} recap={recap} planLast={planLast} planFromHC={planFromHC} weather={weather} growth={growth} arc={dayPlan.arc} onArcAct={dayPlan.actArc} />
                 )}
               </FadeIn>
               </Animated.View>

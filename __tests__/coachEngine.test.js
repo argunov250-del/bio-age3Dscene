@@ -306,8 +306,9 @@ describe('16–17. офлайн и отсутствие сетевых зави�
 
 describe('18. интерфейс не изменён вне необходимости', () => {
   test('чат и профиль сохранили ключевые элементы', () => {
-    const chatSrc = fs.readFileSync(path.join(__dirname, '..', 'lib', 'screens', 'CoachScreen.js'), 'utf8');
-    ['function Bubble', 'KineticText', 'GAUGE.typingMs', 'coach/store', 'coach/qaEngine'].forEach((m) => expect(chatSrc).toContain(m));
+    // Чата и локальной модели больше нет: Хирон — карточки и «Совет на сегодня».
+    expect(fs.existsSync(path.join(__dirname, '..', 'lib', 'screens', 'CoachScreen.js'))).toBe(false);
+    expect(fs.existsSync(path.join(__dirname, '..', 'lib', 'llm.js'))).toBe(false);
     const prof = fs.readFileSync(path.join(__dirname, '..', 'lib', 'screens', 'ProfileScreen.js'), 'utf8');
     expect(prof).toContain('Юмор Хирона'); expect(prof).toContain('Очистить память Хирона'); expect(prof).not.toMatch(/Health ?Connect.*clear/i);
   });

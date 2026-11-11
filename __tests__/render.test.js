@@ -127,7 +127,7 @@ async function runApp({ lang, stored, theme }) {
     const WebView = React.forwardRef((props, ref) => {
       const say = (type) => props.onMessage && props.onMessage({ nativeEvent: { data: JSON.stringify({ type }) } });
       React.useImperativeHandle(ref, () => ({
-        injectJavaScript(js) { sceneCalls.push(js); if (js.includes('SCENE.reveal()')) setTimeout(() => { say('revealing'); say('half'); say('real'); }, 10); },
+        injectJavaScript(js) { sceneCalls.push(js); if (js.includes('SCENE.reveal(')) setTimeout(() => { say('revealing'); say('half'); say('real'); }, 10); },
       }));
       React.useEffect(() => { const id = setTimeout(() => { say('loaded'); say('sketched'); }, 10); return () => clearTimeout(id); }, []);
       return React.createElement('WebView', null);
@@ -171,22 +171,30 @@ async function runApp({ lang, stored, theme }) {
     return t;
   };
   const seen = {};
+  let tabs = [];
   // Запуск идёт через 3D-сцену: обычного экрана запуска нет, сцена получила команду «проявиться».
   const { SceneLaunch } = require(path.join(ROOT, 'lib/screens/SceneLaunch'));
   const launch = r.root.findAll((n) => n.type === LaunchScreen || n.type === SceneLaunch);
   if (r.root.findAll((n) => n.type === LaunchScreen).length) throw new Error('3D-сцена не запустилась: показан запасной экран запуска');
-  if (!sceneCalls.some((js) => js.includes('SCENE.reveal()'))) throw new Error('сцена не получила команду проявления: ' + JSON.stringify(sceneCalls).slice(0, 300) + ' launch=' + launch.length + ' props=' + JSON.stringify(launch[0] && { phase: launch[0].props.phase, ready: launch[0].props.ready }));
+  if (!sceneCalls.some((js) => js.includes('SCENE.reveal('))) throw new Error('сцена не получила команду проявления: ' + JSON.stringify(sceneCalls).slice(0, 300) + ' launch=' + launch.length + ' props=' + JSON.stringify(launch[0] && { phase: launch[0].props.phase, ready: launch[0].props.ready }));
   if (stored && launch.length) throw new Error('экран запуска не убран после проявления сцены');
+  if (!sceneCalls.some((js) => js.includes(stored ? 'SCENE.reveal(false)' : 'SCENE.reveal(true)'))) throw new Error('первый запуск — долгий пролёт, повторный — быстрый');
   if (launch.length) { await act(async () => { launch[0].props.onReveal(); launch[0].props.onDone(); }); await flush(); }
   seen.start = texts();
   if (stored) {
     const bar = r.root.findAll((n) => n.type === TabBar)[0];
     if (!bar) throw new Error('TabBar не отрисован; экран: ' + seen.start.slice(0, 1500));
+    tabs = bar.props.tabs.map((t) => t.key);
     if (!sceneCalls.some((js) => js.includes('SCENE.set('))) throw new Error('сцена не получила состояние (сезон, погода, тема)');
-    for (const key of ['metrics', 'coach', 'growth', 'profile', 'home']) {
+    const { HomeScreen } = require(path.join(ROOT, 'lib/screens/HomeScreen'));
+    // «Главная» открывается чистым пейзажем: панели с показателями нет, пока её не раскрыли.
+    if (r.root.findAll((n) => n.type === HomeScreen)[0].props.open) throw new Error('«Главная» должна открываться свёрнутой');
+    if (texts().includes(lang === 'ru' ? 'Готовность' : 'Readiness')) throw new Error('показатели видны до раскрытия панели');
+    for (const key of ['metrics', 'growth', 'profile', 'home']) {
       const b = r.root.findAll((n) => n.type === TabBar)[0];
       await act(async () => { b.props.onChange(key); });
       await flush(); await flush();
+      if (key === 'home') { await act(async () => { r.root.findAll((n) => n.type === HomeScreen)[0].props.onToggle(true); }); await flush(); }
       seen[key] = texts();
     }
     // Вкладки поворачивают сцену; выключение в профиле убирает её, включение — возвращает сразу живой.
@@ -218,7 +226,7 @@ async function runApp({ lang, stored, theme }) {
     await flush(); await flush();
     seen.switched = texts();
     expect(seen.switched).toContain(other === 'en' ? 'Profile' : 'Профиль');
-    for (const key of ['home', 'metrics', 'coach', 'growth']) {
+    for (const key of ['home', 'metrics', 'growth']) {
       await act(async () => { r.root.findAll((n) => n.type === TabBar)[0].props.onChange(key); });
       await flush();
       texts();
@@ -233,7 +241,7 @@ async function runApp({ lang, stored, theme }) {
   await act(async () => { r.unmount(); });
   spy.mockRestore();
   jest.useRealTimers();
-  return { errors, seen };
+  return { errors, seen, tabs };
 }
 
 // Обе темы: светлая (по умолчанию) и тёмная рисуют все вкладки без ошибок; переключение в профиле — на лету.
@@ -241,7 +249,7 @@ describe.each(['light', 'dark'])('theme=%s', (theme) => {
   test('вкладки отрисованы, тема применена и переключается', async () => {
     const { errors, seen } = await runApp({ lang: 'ru', stored: true, theme });
     expect(errors).toEqual([]);
-    for (const k of ['home', 'metrics', 'coach', 'growth', 'profile']) expect(seen[k].length).toBeGreaterThan(10);
+    for (const k of ['home', 'metrics', 'growth', 'profile']) expect(seen[k].length).toBeGreaterThan(10);
     expect(seen.profile).toContain('ТЕМА');
     const T = require(path.join(ROOT, 'lib/theme'));
     expect(T.THEMES[theme].bg).toBe(theme === 'dark' ? '#0E0F11' : '#EEF0F3');
@@ -255,13 +263,18 @@ for (const lang of ['ru', 'en']) for (const stored of [false, true]) cases.push(
 
 describe.each(cases)('render lang=%s stored=%s', (lang, stored) => {
   test('первый рендер и вкладки без ошибок', async () => {
-    const { errors, seen } = await runApp({ lang, stored });
+    const { errors, seen, tabs } = await runApp({ lang, stored });
+    const r0 = { tabs };
     expect(errors).toEqual([]);
     if (process.env.DUMP) for (const k of Object.keys(seen)) console.log(lang, stored, k, seen[k].slice(0, 160));
     expect(seen.start.length).toBeGreaterThan(10);
     if (stored) {
       // Заголовки вкладок — строки (не функции) на нужном языке.
-      const title = lang === 'ru' ? 'Метрики' : 'Metrics';
+      const title = lang === 'ru' ? 'Здоровье' : 'Health';
+      // Вкладки Хирона нет, но Хирон есть на «Главной» и на «Здоровье».
+      expect(r0.tabs).toEqual(['home', 'metrics', 'growth', 'profile']);
+      expect(seen.home).toContain(lang === 'ru' ? 'Хирон' : 'Chiron');
+      expect(seen.metrics).toContain(lang === 'ru' ? 'Хирон' : 'Chiron');
       expect(seen.home).toContain(title);
       expect(seen.profile).toBeTruthy();
       // Первое открытие «Роста» — вводный шаг 1/2.

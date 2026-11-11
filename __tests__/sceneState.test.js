@@ -5,40 +5,38 @@ const { sceneState, windLevel } = require('../lib/sceneState');
 const at = (m, d, h = 13) => new Date(2026, m - 1, d, h, 0, 0);
 
 describe('сцена по календарю', () => {
-  test('зима без погоды: снежная сцена, снег не идёт, листьев нет', () => {
+  test('зима без погоды: горы в снегу, снег не идёт, погода смоделирована', () => {
     const s = sceneState(at(1, 15));
     expect(s.snow).toBe(1);
     expect(s.precip).toBeNull();
-    expect(s.leaf).toBe(0);
+    expect(s.live).toBe(false);
   });
-  test('март: оттепель — снег тает', () => {
-    const a = sceneState(at(3, 5)).snow, b = sceneState(at(3, 25)).snow;
+  test('весна: граница снега поднимается', () => {
+    const a = sceneState(at(3, 20)).snow, b = sceneState(at(4, 25)).snow;
     expect(a).toBeLessThan(1);
     expect(b).toBeLessThan(a);
-    expect(sceneState(at(4, 10)).snow).toBe(0);
+    expect(sceneState(at(7, 10)).snow).toBe(0);
   });
-  test('лето: густая зелень без снега', () => {
+  test('лето: снег только на вершинах, зелёные луга', () => {
     const s = sceneState(at(7, 10));
     expect(s.snow).toBe(0);
-    expect(s.leaf).toBe(1);
     expect(s.tone).toBeCloseTo(1, 1);
     expect(s.grass).toBeGreaterThan(0.9);
   });
-  test('осень: листва желтеет и опадает, в воздухе листья', () => {
+  test('осень: луга рыжеют, снег возвращается', () => {
     const s = sceneState(at(10, 20));
     expect(s.tone).toBeGreaterThan(1.5);
-    expect(s.leaf).toBeLessThan(1);
-    expect(s.drift).toBe('leaf');
+    expect(s.snow).toBeGreaterThan(0);
   });
   test('год замкнут: 31 декабря и 1 января выглядят одинаково', () => {
     const a = sceneState(at(12, 31)), b = sceneState(at(1, 1));
     expect(Math.abs(a.snow - b.snow)).toBeLessThan(0.05);
-    expect(Math.abs(a.leaf - b.leaf)).toBeLessThan(0.05);
+    expect(Math.abs(a.grass - b.grass)).toBeLessThan(0.05);
   });
   test('все числа конечны в любой день года', () => {
     for (let d = 0; d < 366; d++) {
       const s = sceneState(new Date(2028, 0, 1 + d, 12));
-      for (const k of ['snow', 'leaf', 'tone', 'bloom', 'grass', 'wind', 'cloud', 'fog']) {
+      for (const k of ['snow', 'tone', 'grass', 'wind', 'cloud', 'fog']) {
         expect(Number.isFinite(s[k])).toBe(true);
         expect(s[k]).toBeGreaterThanOrEqual(0);
       }
@@ -51,6 +49,7 @@ describe('сцена по погоде', () => {
     const s = sceneState(at(7, 10), { kind: 'snow', day: true });
     expect(s.precip).toBe('snow');
     expect(s.snow).toBe(1);
+    expect(s.live).toBe(true);
   });
   test('гроза: дождь, молнии, сильный ветер', () => {
     const s = sceneState(at(7, 10), { kind: 'storm', day: true, wind: 5 });
